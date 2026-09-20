@@ -224,6 +224,19 @@ Placements preview before paying. Parts from an EasyEDA/LCSC-derived
 library are usually already at JLC's zero; stock KiCad footprints are
 where corrections are needed.
 
+- **Derive corrections with `scripts/jlc_compare.py board.kicad_pcb`**: it fetches JLCPCB's
+  footprint for every polarised part's LCSC number, matches it to the board's pad number by
+  pad number at 0/90/180/270, and prints the correction, the origin offset, the worst-pad
+  fit and ready-to-paste `overrides`. On a 47-part board: every EasyEDA-derived footprint at
+  zero, the four stock SOT-23 / SOT-223 at +180. It cannot see the polarity of two-pad
+  parts (it matches pad 1 to pad 1): confirm from their silk or symbol. The EasyEDA API
+  refuses requests after a burst of ~25; the tool caches and paces, so just run it again.
+- **Check each part's "PCBA Type" on jlcpcb.com/partdetail/Cxxxx before choosing Economic.**
+  Radio modules are often "Standard Only" (ESP32-S3-WROOM-1U-N4 is); one such part moves the
+  whole order to Standard. Through-hole parts show "Wave Soldering".
+- **Check manufacturer names against LCSC, not memory** (`wmsc.lcsc.com/ftps/wm/product/detail?
+  productCode=Cxxxx` returns `brandNameEn`, `productModel`, `stockNumber`): a BOM whose LCSC
+  numbers were all right still had 9 of 34 manufacturers wrong.
 - **JLCPCB's zero orientation belongs to their footprint for each LCSC part, not to the
   package name.** Two SOT-23-6 parts on one board needed +270 and +180. Derive it: fetch
   their footprint (`uvx easyeda2kicad --lcsc_id Cxxxx --footprint`), find the KiCad rotation

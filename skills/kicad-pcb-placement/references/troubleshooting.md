@@ -149,6 +149,16 @@ folder: it drops a log directory wherever it starts. 45 s for a 50-part board.
 Order that works: scripted routes -> ground vias and any net-specific zones -> ground zones (unfilled)
 -> split T junctions -> export -> Freerouting -> keep new items on non-scripted nets -> replay -> fill -> DRC.
 
+## JLCPCB package
+| Symptom | Cause | Fix |
+|---|---|---|
+| `easyeda2kicad` says "Can't find the folder" | it will not create the output folder | make it first (`jlc_compare.py` does) |
+| `easyeda2kicad` / the EasyEDA API answers HTTP 403 for every part | rate limit after a burst of ~25 requests | stop; run again later. Do not work round it. What was fetched is cached |
+| the assembly quote insists on Standard PCBA | one part is "Standard Only" (radio modules usually are) | check `jlcpcb.com/partdetail/Cxxxx` for every non-passive before promising Economic |
+| the package builder's DRC gate fails on errors the project has accepted | a library footprint's own pegs/pads violate the board rule | whitelist exactly those (type + the footprint named on both items), never a whole type |
+| two BOM lines for one LCSC number | the parts have different Values (SW1 "RESET", SW2 "BOOT") | group by (footprint, LCSC), use the MPN as the Comment when values differ |
+| stock KiCad SOT-23 / SOT-223 turned 180 in the preview | KiCad draws pin 1 top-left, JLCPCB's footprints for these have it bottom-right | `jlc_compare.py` finds it per LCSC part; do not apply it by package name |
+
 ## Things DRC will not tell you
 | Symptom | Cause | Fix |
 |---|---|---|

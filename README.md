@@ -43,6 +43,8 @@ skills/
                                  hybrid mode that hands the non-critical nets to Freerouting
                                  and replays its stored result (see Status and caveats)
     scripts/jlc_cpl.py           JLCPCB CPL export with sourced rotation corrections
+    scripts/jlc_compare.py       derives those corrections: matches the board's pads to JLCPCB's
+                                 own footprint for each LCSC number (needs easyeda2kicad)
     references/                  placement conventions, recipe evidence, stackup and
                                  impedance, pcbnew API notes, troubleshooting, and six
                                  worked examples from a fabricated board
