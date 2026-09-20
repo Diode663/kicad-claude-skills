@@ -39,6 +39,11 @@ def build(d):
     s = d.sheet("sensor-amp.kicad_sch", "3.3 V Regulator & Sensor Amplifier",
                 paper="auto", comment="Stock-library example for the kicad-schematic-layout skill")
 
+    # One block per circuit. Everything drawn between block_start() and
+    # block_end() is in it, notes included; the outline is derived from the
+    # contents, so nothing can end up lying across it. Never type a rectangle.
+    s.block_start("INPUT & 3.3 V REGULATOR")
+
     # ---- Input connector: mirrored so pins point right, into the circuit ----
     s.place("J1", "Connector_Generic:Conn_01x03", "SENSOR IN", 25.4, 50.8, mirror="y")
     s.stub("J1", 1, 5.08, power="+5V")
@@ -71,7 +76,12 @@ def build(d):
     s.wire(s.pin("C2", 1), (vo[0] + 7.62, vo[1]))
     s.stub("C2", 2, 2.54, power="GND")
 
+    s.note("AMS1117: ~1.1 V dropout, so 5 V in leaves margin for 3.3 V out.\n"
+           "Check the datasheet's output-capacitor ESR range.", 15.24, 81.28, 1.0)
+    s.block_end()
+
     # ---- Op-amp A: non-inverting, G = 1 + R1/R2 ------------------------------
+    s.block_start("SENSOR AMPLIFIER")
     s.place("U2", "Amplifier_Operational:LM358", "LM358", 132.08, 55.88, unit=1)
     plus, minus, out = s.pin("U2", 3, 1), s.pin("U2", 2, 1), s.pin("U2", 1, 1)
     s.wire(plus, (plus[0] - 7.62, plus[1]))
@@ -110,19 +120,15 @@ def build(d):
     s.stub("C3", 1, 2.54, power="+5V")
     s.stub("C3", 2, 2.54, power="GND")
 
-    # ---- Blocks and notes -------------------------------------------------------
-    s.box(15.24, 38.1, 96.52, 76.2, title="INPUT & 3.3 V REGULATOR")
-    s.box(106.68, 38.1, 177.8, 111.76, title="SENSOR AMPLIFIER")
-    s.note("AMS1117: ~1.1 V dropout, so 5 V in leaves margin for 3.3 V out.\n"
-           "Check the datasheet's output-capacitor ESR range.", 15.24, 81.28, 1.0)
-    # Notes go in the free left column, not under the amplifier: the bottom
-    # right of every sheet belongs to the title block.
+    # ---- Notes: inside the block they explain -------------------------------------
     s.note("G = 1 + R1/R2 = 2: a 0-1.5 V sensor gives 0-3 V at AMP_OUT.\n"
            "U2 runs from +5V because an LM358 only swings to about V+ - 1.5 V.",
-           15.24, 88.9, 1.0)
+           109.22, 116.84, 1.0)
     s.note("Unused half B: follower with + at GND (inside the LM358's\n"
            "common-mode range) so it cannot oscillate. C3 close to pin 8.",
-           15.24, 96.52, 1.0)
+           109.22, 124.46, 1.0)
+    s.block_end()
+    s.arrange()               # flow the blocks left to right and size the paper
     return s
 
 

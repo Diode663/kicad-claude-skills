@@ -11,8 +11,11 @@ hand-authored geometry:
     Sheet.check()        off-grid points, dangling wire ends, wires through
                          bodies, pins landing mid-wire, bus entries that miss
                          their bus, crossing count
+    outline_faults()     strings and part bodies touching a block outline (run by
+                         check() on the model and by check_text() on KiCad's render)
     Design.verify()      KiCad's own netlist vs. your intended NETS spec
     Design.erc()         ERC summary by category
+    Design.check_text()  KiCad's own render: text collisions, crowding, outline faults
     Design.render()      SVG + PDF of every page, for looking at the result
 
 Minimal use:
@@ -96,6 +99,7 @@ GROW_PAPER_ORDER = ["A5", "A4", "A3", "A2", "A1"]
 BLOCK_PAD = 5.08          # clear space between a block's contents and its outline
 BLOCK_GUTTER = 12.7       # clear space between neighbouring blocks
 BLOCK_TITLE_H = 5.08      # band above a block reserved for its title
+OUTLINE_CLEAR = 0.8       # nothing drawn may come closer than this to a block outline
 BLOCK_ASPECT = 1.6        # preferred width:height when wrapping child blocks
 
 # Clearance policy. These are what "generous" means, in millimetres, and they
@@ -1145,10 +1149,22 @@ class Sheet:
             xs.append(x)
             ys.append(y)
         a, z = sl["symbols"]
+        spots = self.layout_fields() if z > a else {}
         for s in self.symbols[a:z]:
             l, t, r, b = self.body_bbox(s)
             add(l, t)
             add(r, b)
+            # where the reference, value or port name will REALLY be drawn, at
+            # its measured width. The allowances below are a floor, not the
+            # answer: a "10uF/50V" beside a capacitor on the block's flank ran
+            # 3 mm past them and lay across the outline.
+            for text, spot in zip((s["ref"], str(s["value"])), spots.get(id(s), ())):
+                fx, fy, fj, _fa, hidden = spot
+                if hidden or not text or (s["power"] and text == s["ref"]):
+                    continue
+                bx = self._text_box(text, fx, fy, 1.27, fj, 0)
+                add(bx[0], bx[1])
+                add(bx[2], bx[3])
             if not s["power"]:
                 # reference/value text sits just outside the body
                 add(l, t - 4.0)
@@ -1162,7 +1178,9 @@ class Sheet:
             add(x2, y2)
         a, z = sl["labels"]
         for _k, name, x, y, angle, _j, _sh in self.labels[a:z]:
-            w = len(name) * 1.1 + 3.0
+            # measured, not guessed: the outline's clearance is only as good as
+            # the extents it is derived from (+1.5 for a label's own offset)
+            w = text_width(name, 1.27) + 1.5
             add(x, y)
             if angle == 180:
                 add(x - w, y)
@@ -1174,9 +1192,9 @@ class Sheet:
                 add(x, y + w)
         a, z = sl["texts"]
         for content, x, y, size, _j, _b in self.texts[a:z]:
-            longest = max(len(line) for line in content.split(chr(10)))
+            tw, th = text_extent(content, size, bool(_b))
             add(x, y - size)
-            add(x + longest * size * 0.85, y + size * content.count(chr(10)) * 1.6)
+            add(x + tw, y - size + th)
         a, z = sl["no_connects"]
         for x, y in self.no_connects[a:z]:
             add(x, y)
@@ -1215,7 +1233,7 @@ class Sheet:
             return r
         # the title is drawn from the top-left corner and is often wider than a
         # narrow block: reserve its width, or it runs into the next block along
-        right = max(r[2], r[0] + len(b["title"]) * 1.6 * 0.85)
+        right = max(r[2], r[0] + text_width(b["title"], 1.6, True))
         return (r[0], r[1] - BLOCK_TITLE_H, right, r[3])
 
     def _block_holding(self, list_name, idx):
@@ -3251,6 +3269,8 @@ class Sheet:
         # of each other, text crowded against its neighbours. ERC sees none of
         # these, and all of them are what makes a sheet look amateur.
         errors += self.check_blocks()
+        # the model's view of it; check_text() repeats this on KiCad's own render
+        warnings += outline_faults(self)
         for m in self.check_spacing():
             (warnings if m.startswith("note ") or " note " in m else errors).append(m)
         return (sorted(set(errors)), sorted(set(warnings)), info)
@@ -3865,8 +3885,10 @@ class Design:
     def check_text(self, quiet=False, min_gap=CLEAR_ROW, show=8):
         """Render every sheet and check the text as KiCad actually drew it.
 
-        Two things, from one render:
+        Three things, from one render:
         * collisions -- text drawn sideways, or on top of a part or a wire;
+        * outline faults (counted with the collisions) -- a string or a part
+          body touching or straddling a block outline;
         * crowding -- any two strings closer than `min_gap`, which is the
           fault that makes a sheet look amateur and that no netlist, ERC run
           or internal estimate can see. Pairs inside one library symbol are
@@ -3884,6 +3906,7 @@ class Design:
                     skipped.append(label)
                     continue
                 problems += [f"{sheet.filename}: {p}" for p in text_collisions(sheet, path)]
+                problems += [f"{sheet.filename}: {p}" for p in outline_faults(sheet, path)]
                 crowded += [f"{sheet.filename}: {c}"
                             for c in crowding(sheet, path, min_gap, CLEAR_STACK)]
         finally:
@@ -4509,13 +4532,24 @@ def _attribute(sheet, strings):
             texts = it.get("lines") or [it["text"]]
             if not any(st["text"] == x or str(x).startswith(st["text"]) for x in texts):
                 continue
+            if len(texts) > 1:
+                # a multi-line note is one item drawn as several strings: every
+                # line inside its box is its own. Matching by distance to the
+                # box centre claimed one line and left the rest as strangers,
+                # which then "crowded" each other at KiCad's own line pitch.
+                bx = it["box"]
+                if bx[0] - 1.0 <= cx <= bx[2] + 1.0 and bx[1] - 2.5 <= cy <= bx[3] + 2.5:
+                    best = (-1.0, None, it)
+                    break
+                continue
             mx = (it["box"][0] + it["box"][2]) / 2
             my = (it["box"][1] + it["box"][3]) / 2
             d = (mx - cx) ** 2 + (my - cy) ** 2
             if d < 6.25 and (best is None or d < best[0]):     # within 2.5 mm
                 best = (d, i, it)
         if best:
-            used.add(best[1])
+            if best[1] is not None:
+                used.add(best[1])
             it = best[2]
             st["owner"] = it["owner"]
             kind = KIND.get(it["kind"], it["kind"])
@@ -4561,6 +4595,61 @@ def crowding(sheet, svg_path, row=CLEAR_ROW, stack=CLEAR_STACK):
                              f"({how}, want {want:.2f})"))
     out.sort(key=lambda t: -t[0])
     return [m for _g, m in out]
+
+
+def outline_faults(sheet, svg_path=None, clear=OUTLINE_CLEAR):
+    """Strings and part bodies that touch or straddle a block outline.
+
+    An outline is a dashed rectangle; a label lying across it reads as a
+    drafting error even when every connection is right, and it is the usual
+    result of typing a rectangle by hand instead of deriving it from the
+    block's contents. With `svg_path` the strings are KiCad's own (every
+    field, label, note, pin and power-port name, at the size KiCad drew it);
+    without it, the model's boxes are used, which is what write() can afford.
+
+    A box is in fault with a rectangle when it comes within `clear` of one of
+    its four edges: inside-and-clear is fine, outside-and-clear is fine."""
+    rects = []
+    named = {}
+    for b in sheet.all_blocks():
+        r = sheet.block_rect(b)
+        if r is not None:
+            named[tuple(round(v, 2) for v in r)] = b["title"] or "(untitled block)"
+    for r in sheet.rects:
+        x1, y1, x2, y2 = r[:4]
+        key = tuple(round(v, 2) for v in (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+        rects.append((key, named.get(key, "box at (%.1f, %.1f)" % key[:2])))
+    if not rects:
+        return []
+    boxes = []
+    if svg_path:
+        for st in svg_strings(svg_path):
+            boxes.append((repr(st["text"][:40]), st["box"]))
+    else:
+        for it in sheet.item_boxes():
+            if it["kind"] in ("field", "label", "note"):
+                boxes.append((repr(str(it["text"]).split(chr(10))[0][:40]), it["box"]))
+    for sym in sheet.symbols:
+        if not sym["power"]:
+            boxes.append(("part " + sym["ref"], sheet.body_bbox(sym)))
+    out, seen = [], set()
+    for what, (l, t, r_, b_) in boxes:
+        for (x1, y1, x2, y2), title in rects:
+            outside = r_ < x1 - clear or l > x2 + clear or b_ < y1 - clear or t > y2 + clear
+            inside = l > x1 + clear and r_ < x2 - clear and t > y1 + clear and b_ < y2 - clear
+            if outside or inside:
+                continue
+            edges = [n for n, hit in (("left", l <= x1 + clear and r_ >= x1 - clear),
+                                      ("right", l <= x2 + clear and r_ >= x2 - clear),
+                                      ("top", t <= y1 + clear and b_ >= y1 - clear),
+                                      ("bottom", t <= y2 + clear and b_ >= y2 - clear)) if hit]
+            key = (what, title)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append("%s touches the %s edge of %r at (%.1f, %.1f)"
+                       % (what, "/".join(edges) or "outline", title, (l + r_) / 2, (t + b_) / 2))
+    return out
 
 
 def text_collisions(sheet, svg_path):

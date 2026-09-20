@@ -228,6 +228,42 @@ for anything that isn't a one- or two-segment local connection (section 4).
 `Design.verify()` catches a wire you left spanning two blocks, because the
 net breaks the moment they are flowed apart.
 
+### How big is a block?
+
+One block per **circuit**: the unit a reference design gives its own heading.
+
+| Too fine (what a generator drifts toward) | Right |
+|---|---|
+| BOOST INPUT / BOOST CONTROLLER / 24 V OUTPUT & FEEDBACK / SOFT-START LOAD SWITCH | 24 V BOOST CONVERTER |
+| ESP32-S3 MODULE / SUPPORT CIRCUITRY | ESP32-S3 MODULE (reset, boot, pull-ups, decoupling, strapping notes inside) |
+| INA226 CURRENT MONITOR / SHUNT, FILTER & FIELD TERMINAL | LOOP TERMINAL & CURRENT MEASUREMENT |
+| 3.3 V REGULATION / STATUS | 3.3 V REGULATOR & POWER LED |
+
+Why finer is worse, not just busier: a circuit's own wires then cross box lines,
+and every crossing is a place for a label, a pin name or a power-port name to land
+on the dashes. The owner's words on a 12-box, 50-part sheet: "too granular ... the
+boost converter doesn't need to be separated into input and output sections".
+Seven blocks replaced the twelve. Vendor sheets agree -- Adafruit's ESP32-S3
+Feather has "POWER AND FILTERING", "USB TO SERIAL CONVERTER", "LIPO CHARGING",
+"RESET", "LED", and the module with its decoupling in one untitled region.
+
+Separate blocks are right when the circuits are separable: they connect only by
+net name or rail, and either could be lifted into another design. A limiter and
+the measurement front end it feeds are two blocks; a regulator's input cap and its
+output cap are not.
+
+A sub-heading inside a block (a bold 1.4 mm note such as "FEEDBACK MATH") is how to
+structure a big block without boxing it.
+
+### Nothing touches an outline
+
+`check_text()` reports any string or part body within `OUTLINE_CLEAR` (0.8 mm) of
+a rectangle, from KiCad's own render; `write()` warns from the model. Derived
+outlines pass by construction because `_bbox()` measures text with `text_width()`
+/ `text_extent()` -- it used to count characters, which left notes over-wide and
+labels under-wide. Notes belong inside the block they explain: a note column
+parked beside a box is the first thing a neighbouring outline runs through.
+
 ## 6.3 Spacing: measure it
 
 Every crowded generated schematic has the same cause -- a spacing number

@@ -1,6 +1,6 @@
 ---
 name: kicad-schematic-layout
-description: Generate or redraw KiCad schematics (.kicad_sch) from Python so they look professionally drafted — hierarchical sheets, power-port symbols, real wires and junctions, buses, titled functional blocks, on-sheet design notes, ready-made subcircuits (LDO, USB-C sink, ESP32-S3 core, MT3608 boost, INA226 4-20 mA input, I2C pull-ups, LED) — lint the spec against design rules before drawing, and prove the result against KiCad's own netlist. Use this whenever the user wants a KiCad schematic created from a circuit description, BOM or netlist; wants an existing generated or netlist-style schematic made readable ("fix the stacked labels", "clean up", "relayout", "make it look professional", "split into sheets"); or wants code that writes .kicad_sch files — even if they never say "generate". Not for PCB layout or for judging whether a circuit is electrically sound (the kicad review skill does that); part sourcing belongs to the lcsc/bom skills.
+description: Generate or redraw KiCad schematics (.kicad_sch) from Python so they look professionally drafted — hierarchical sheets, power-port symbols, real wires and junctions, buses, titled functional blocks (one per circuit, outlines derived from their contents so nothing lies across a box line), on-sheet design notes, ready-made subcircuits (LDO, USB-C sink, ESP32-S3 core, MT3608 boost, INA226 4-20 mA input, I2C pull-ups, LED) — lint the spec against design rules before drawing, and prove the result against KiCad's own netlist. Use this whenever the user wants a KiCad schematic created from a circuit description, BOM or netlist; wants an existing generated or netlist-style schematic made readable ("fix the stacked labels", "clean up", "relayout", "make it look professional", "split into sheets", "too many group boxes", "text is on the box lines"); or wants code that writes .kicad_sch files — even if they never say "generate". Not for PCB layout or for judging whether a circuit is electrically sound (the kicad review skill does that); part sourcing belongs to the lcsc/bom skills.
 ---
 
 # KiCad schematic layout
@@ -11,7 +11,7 @@ floating symbols, every pin a stub with a label stacked on it, rails
 spelled out as text, a small drawing lost on a big page. It is electrically
 correct and unreadable.
 
-This skill gives you five things:
+This skill gives you six things:
 
 - **`scripts/schlib.py`** — a builder. You place parts, draw wires, power
   ports, labels and notes in sheet coordinates, and declare which functional
@@ -35,6 +35,8 @@ This skill gives you five things:
   differential-pair name matcher against pcbnew's `DpCoupledNet()` over
   2317 names, `scripts/probe_fields.py` and `scripts/probe_transforms.py`
   do the same for field rotation.
+- **`scripts/block_crops.py`** — one full-size picture per block for the
+  visual pass, because a whole sheet in one screenshot shows nothing.
 - **`scripts/subcircuits.py`** — proven blocks (regulator, USB-C, ESP32-S3,
   boost, loop input...) that each carry their PARTS, NETS and drawing, so
   the spec and the sheet come from one place.
@@ -187,7 +189,31 @@ with s.block("3.3 V REGULATION"):        # or block_start()/block_end()
   (`s.block_start(None, pad=None)`) so it flows too.
 
 `box()` still exists for a one-off rectangle that is not a block, but a
-hand-placed outline is what produces overlapping boxes and clipped titles.
+hand-placed outline is what produces overlapping boxes, clipped titles and
+labels lying across a dashed line.
+
+**One block per circuit, not per sub-function.** A boost converter is one
+block -- load switch, input cap, controller, rectifier, output cap and
+feedback divider together -- not "BOOST INPUT", "BOOST CONTROLLER" and
+"24 V OUTPUT & FEEDBACK". A module is one block with its reset RC, boot
+button, pull-ups, decoupling and strapping notes, not "MODULE" beside
+"SUPPORT CIRCUITRY". The test: *would this box get its own heading in the
+part's reference design?* Vendors' sheets for the same parts (Adafruit's
+ESP32-S3 Feather: "POWER AND FILTERING", "USB TO SERIAL CONVERTER", "LIPO
+CHARGING", the module and all that serves it in one region) run to five to
+eight regions for a 50-part board. Splitting finer scatters one circuit's
+wires across box lines, which is exactly where labels and outlines collide,
+and it makes the reader reassemble the circuit. Twelve boxes on a 50-part
+sheet was too many; the owner asked for them to be merged.
+
+**Nothing may touch an outline.** `check_text()` reads KiCad's render and
+reports every string and part body within `OUTLINE_CLEAR` (0.8 mm) of any
+rectangle on the sheet -- block outlines and `box()` alike -- counted with
+the collisions; `write()` warns about the same from the model. A sheet of
+content-derived blocks passes by construction; a sheet of hand-typed
+rectangles does not (about a hundred faults on the 50-part sheet this was
+written for). A fault on a derived outline means the extent model missed
+something: fix `_bbox`, don't nudge the part.
 
 ### Spacing is computed, not typed
 
@@ -350,12 +376,24 @@ A netlist match says nothing about appearance, so look at every sheet.
    `check_text()` (below), and use the browser's JavaScript tool to query
    element positions.
 
+4. **Look at every block at full size**:
+   `python scripts/block_crops.py <root.kicad_sch> <dir> --serve 8760` writes
+   one cropped SVG per block (`p1_b0.svg`, ...) and an `index.html`. A static
+   crop paints at once where the pan/zoom viewer times out, and it is cut from
+   the rectangle KiCad saved, so it cannot be aimed wrong. A whole A2 page in
+   one screenshot only proves the blocks are in the right places.
+   **Use a port nobody else is on.** A server left over from an earlier
+   session keeps answering on 8731 from its old folder, and you review last
+   week's drawing with no error anywhere; the SVG's `<title>` carries the
+   render time -- check it when something looks familiar.
+
 Before the visual pass, run **`d.check_text()`**. It renders every sheet and
 reads KiCad's own SVG, where every string is an element with an exact
 position and length. This is the authority on spacing -- not the model, not
 your reading of the code -- and it reports two things:
 
-- **collisions**: text drawn sideways, on a wire, or over a part body;
+- **collisions**: text drawn sideways, on a wire, or over a part body -- and
+  any string or part body touching a block outline;
 - **crowding**: any two strings closer than the clearance, with the pair
   named and the gap measured. Strings belonging to one library symbol (a pin
   name against its own pin number) are excluded: that spacing is the
@@ -428,8 +466,11 @@ Details and the reasons behind each rule are in `references/layout-conventions.m
 10. Put design maths and constraints on the sheet as notes: divider values,
     shunt sizing, strapping-pin rules, "place near pin X".
 11. Group functional blocks in dashed outlines with bold titles, declared in
-    signal order and arranged left→right, top→bottom. Let `arrange()` place
-    them: a hand-placed rectangle is how boxes end up overlapping.
+    signal order and arranged left→right, top→bottom. **One block per
+    circuit** (what a reference design would give its own heading), notes
+    inside the block they explain. Let `arrange()` place them and never type
+    a rectangle: a hand-placed outline is how boxes end up overlapping and
+    how labels end up lying across the dashed line.
 12. Size the paper to the content (`paper="auto"`, fill 70–100%). Fill in
     the title block on every sheet.
 13. Differential pairs are `<BASE>_P` / `<BASE>_N`, never `DP`/`DM`, `P`/`M`
