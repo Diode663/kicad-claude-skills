@@ -1,0 +1,44 @@
+<!doctype html><meta charset=utf-8>
+<title>Schematic viewer</title>
+<!--
+  Viewer for rendered sheets. Serve the render directory over HTTP (file:// is
+  usually blocked in the Browser pane), then open one of:
+
+    view.html                          list the pages (from pages.txt)
+    view.html?f=p1.svg                 whole page, fitted to the window
+    view.html?f=p1.svg&box=120,90,60,34
+        zoom to a region given in SHEET MILLIMETRES: x,y,width,height -- the
+        same coordinates the generator and the .kicad_sch use, so you can aim
+        straight at a part's (at x y). Keep width:height near the window's
+        aspect (about 16:9) or the view letterboxes.
+-->
+<style>
+  html,body{margin:0;height:100%;background:#fff;font:14px system-ui,sans-serif}
+  #v{width:100vw;height:100vh} #v svg{width:100%;height:100%;display:block}
+  ul{margin:24px} li{margin:6px 0}
+</style>
+<div id=v></div>
+<script>
+const p = new URLSearchParams(location.search);
+const v = document.getElementById('v');
+const f = p.get('f');
+if (!f) {
+  fetch('pages.txt?t=' + Date.now()).then(r => r.text()).then(t => {
+    v.innerHTML = '<ul>' + t.trim().split('\n').map(l => {
+      const [file, label] = l.split('\t');
+      return `<li><a href="?f=${file}">${file}</a> — ${label}</li>`;
+    }).join('') + '</ul>';
+  });
+} else {
+  fetch(f + '?t=' + Date.now()).then(r => r.text()).then(t => {
+    const svg = new DOMParser().parseFromString(t, 'image/svg+xml').documentElement;
+    const box = p.get('box');
+    if (box) svg.setAttribute('viewBox', box.split(',').map(Number).join(' '));
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    v.appendChild(document.importNode(svg, true));
+    document.title = 'ready';
+  });
+}
+</script>

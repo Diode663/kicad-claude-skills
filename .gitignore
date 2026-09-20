@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+
+# generator backups and ledgers, if a script is run inside the repo
+.pcbgen-backup/
+.schgen-backup/
+.pcbgen-refs.json
+
+# KiCad local state
+*.kicad_prl
+*.lck
+~*
+fp-info-cache
