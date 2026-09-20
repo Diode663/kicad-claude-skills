@@ -1085,6 +1085,14 @@ class Board:
         the references already placed. Biggest parts go first, because they
         have the fewest good spots.
 
+        If nothing beside the part is clear it widens the search: the same
+        eight spots with the text turned 90 degrees (a column of parts against
+        a board edge has room for upright text and none for level text), then
+        both again one, two and three steps further out. Other parts' bodies
+        (courtyards) count as obstacles: pads and silk alone leave the middle
+        of a SOT-223 looking like free board, and a designator printed there
+        is covered the moment the part is fitted.
+
         ``thickness`` defaults to 0.15 mm, the usual fab minimum for
         silkscreen line width. KiCad's own default is thinner, and DRC then
         complains about every part on the board.
@@ -1098,6 +1106,20 @@ class Board:
                     silk.append(_bbox_mm(it, 0.1))
                 except Exception:
                     pass
+        # Other parts' bodies are obstacles too. Pads and silk alone leave the
+        # middle of a SOT-223 or an inductor looking like free board, and a
+        # designator printed there is covered the moment the part is fitted.
+        bodies = []
+        for fp in self.fps.values():
+            try:
+                cy = fp.GetCourtyard(fp.GetLayer() == pcbnew.F_Cu and pcbnew.F_CrtYd
+                                     or pcbnew.B_CrtYd).BBox()
+                if cy.GetWidth() > 0:
+                    x0, y0 = tomm(cy.GetX()), tomm(cy.GetY())
+                    bodies.append((fp.GetReference(),
+                                   (x0, y0, x0 + tomm(cy.GetWidth()), y0 + tomm(cy.GetHeight()))))
+            except Exception:
+                pass
         ox, oy = self.origin
         edge = (ox + 0.4, oy + 0.4, ox + self.W - 0.4, oy + self.H - 0.4)
         placed, moved, crowded = [], 0, []
@@ -1148,35 +1170,46 @@ class Board:
             # own text, which is the thing being moved
             left, top, right, bot = _part_extent(fp)
             cx, cy = (left + right) / 2, (top + bot) / 2
-            gap = 0.25 + size / 2
-            cands = [(cx, top - gap), (cx, bot + gap), (None, cy), (None, cy),
-                     (left, top - gap), (right, top - gap),
-                     (left, bot + gap), (right, bot + gap)]
             was = t.GetPosition()
+            was_angle = t.GetTextAngleDegrees()
             best = None
-            for i, (x, y) in enumerate(cands):
-                # the left/right spots need the text width, which is only
-                # known once the string is set at its final size
-                t.SetPosition(pcbnew.VECTOR2I(mm(cx), mm(y)))
-                half = tomm(t.GetBoundingBox().GetWidth()) / 2
-                if i == 2:
-                    x = left - gap - half
-                elif i == 3:
-                    x = right + gap + half
-                t.SetPosition(pcbnew.VECTOR2I(mm(x), mm(y)))
-                tb = _bbox_mm(t, 0.05)
-                score = (sum(_hit(tb, o) for o in pads)
-                         + sum(_hit(tb, o) for o in silk)
-                         + sum(_hit(tb, o) for o in placed))
-                outside = not (tb[0] >= edge[0] and tb[1] >= edge[1]
-                               and tb[2] <= edge[2] and tb[3] <= edge[3])
-                score += 5 * outside
-                if best is None or score < best[0]:
-                    best = (score, x, y)
-                if score == 0:
+            # nearest first, level text before upright: the first clear spot
+            # wins, so this order is the preference order
+            for extra in (0.0, 0.7, 1.4, 2.1):
+                for angle in (0, 90):
+                    # the spots need the text's size, which is only known
+                    # once the string is set at its final size and angle
+                    t.SetTextAngleDegrees(angle)
+                    t.SetPosition(pcbnew.VECTOR2I(mm(cx), mm(cy)))
+                    box = t.GetBoundingBox()
+                    hw, hh = tomm(box.GetWidth()) / 2, tomm(box.GetHeight()) / 2
+                    gx, gy = 0.25 + hw + extra, 0.25 + hh + extra
+                    cands = [(cx, top - gy), (cx, bot + gy),
+                             (left - gx, cy), (right + gx, cy),
+                             (left, top - gy), (right, top - gy),
+                             (left, bot + gy), (right, bot + gy)]
+                    for x, y in cands:
+                        t.SetPosition(pcbnew.VECTOR2I(mm(x), mm(y)))
+                        tb = _bbox_mm(t, 0.05)
+                        score = (sum(_hit(tb, o) for o in pads)
+                                 + sum(_hit(tb, o) for o in silk)
+                                 + sum(_hit(tb, o) for o in placed)
+                                 + sum(_hit(tb, o) for r, o in bodies
+                                       if r != fp.GetReference()))
+                        outside = not (tb[0] >= edge[0] and tb[1] >= edge[1]
+                                       and tb[2] <= edge[2] and tb[3] <= edge[3])
+                        score += 5 * outside
+                        if best is None or score < best[0]:
+                            best = (score, x, y, angle)
+                        if score == 0:
+                            break
+                    if best[0] == 0:
+                        break
+                if best[0] == 0:
                     break
+            t.SetTextAngleDegrees(best[3])
             t.SetPosition(pcbnew.VECTOR2I(mm(best[1]), mm(best[2])))
-            if t.GetPosition() != was:
+            if t.GetPosition() != was or t.GetTextAngleDegrees() != was_angle:
                 moved += 1
             if best[0] > 0:
                 crowded.append(fp.GetReference())
@@ -2102,6 +2135,11 @@ class Board:
                    "--side", "bottom" if side == "bottom" else "top"]
             if side == "angled":
                 cmd += ["--rotate", "-30,0,25", "--perspective"]
+            else:
+                # kicad-cli frames the flat views on the board OUTLINE, so
+                # anything overhanging an edge -- a module antenna, a
+                # connector shell -- is cropped and the part looks cut off.
+                cmd += ["--zoom", "0.8"]
             cmd.append(self.pcb)                # positional, and it must be last
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode == 0:

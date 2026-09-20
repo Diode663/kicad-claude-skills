@@ -54,6 +54,39 @@ never put a footprint under a mounting hole's washer.
 - Keep the board's own silkscreen away from the connector's — DRC flags
   silk over the edge, and at a connector that is usually intentional.
 
+## Placing for routability
+
+Found by routing a placed board (50 parts, 2 layers: a Wi-Fi module, USB-C, a boost
+converter and a current-sense front end); each one looked fine as a placement
+and cost a via, a detour or a re-place once copper went in.
+
+- **Order small parts the way the pins they serve are ordered.** Two pull-ups stacked under a
+  module's pins 17 and 18 in the opposite order made pin 17's track cross pin 18's only exit;
+  the autorouter took pin 18 on a 25 mm loop under the module. Swapping the two resistors fixed it.
+- **A USB-C receptacle's data pads read N P N P** (B7 A6 A7 B6). Use the *outer* two as the main
+  path if that gives the pair the order the far end wants: then only one flip-side pad needs a
+  far-layer strap and the pair never crosses itself. Turn the ESD array (USBLC6-2, SOT-23-6) so its
+  two channels sit in that same order -- 180 degrees swaps them. Work the order out from the
+  *destination* pins backwards: approaching a module's edge pads from the side, the track nearer
+  the pads lands on the first pad it meets.
+- **Give the connector fan-out room.** About 5 mm from a USB-C pad row to the ESD array's near
+  pads; at 3.4 mm the strap vias do not fit between the array's ground pad and the pair.
+- **CC pull-downs go in the lanes between VBUS and the data pads**, upright, 2 mm from their pins.
+  Anywhere else, CC has to cross VBUS or the pair.
+- **A receptacle's two VBUS pins are not joined until a plug is in.** Plan one board-side link
+  (under the ESD array is a good place: it feeds the array's VBUS pin too).
+- **Leave a lane past the feedback divider.** A divider placed between the converter's output
+  capacitor and the load boxes the output in; beside the IC, on the FB-pin side, the output
+  rail passes on the top layer and FB gets shorter as well.
+- **An MSOP/TSSOP's adjacent signal pins get boxed in by each other.** Bring such a pair in
+  together with short scripted stubs, inner track to the nearer pin.
+- **Ground vias for an IC's pins go where no signal wants to pass**: above or below the pad row's
+  end, or under the body between the rows -- not beside the pins, which is the signals' way in.
+- **A sense resistor's "ground" tap is not ground.** Keep the pour off that pad
+  (`zone_connection(ref, n, ZONE_CONNECTION_NONE)`) and run the tap to the shunt pad's inner face.
+- **Pads boxed in by neighbours starve the pour** (a USB-C's A1/B12 ground pins): tie them to the
+  shell stake with a track and give them a solid zone connection.
+
 ## RF and antennas
 
 From Espressif's hardware design guidelines, and they generalise to most

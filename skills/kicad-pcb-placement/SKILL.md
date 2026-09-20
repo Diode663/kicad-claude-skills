@@ -1,6 +1,6 @@
 ---
 name: kicad-pcb-placement
-description: Lay out a KiCad PCB (.kicad_pcb) from Python — netlist-driven automatic placement using datasheet-derived recipes (regulator loops, decoupling, charger priority order, hub/codec/GNSS/M.2 rules), a reviewable floor plan with lock-and-rerun, module keep-outs (compute modules / SoMs on mezzanine connectors), double-sided boards, board outline, mounting holes and tidy silkscreen, decoupling rows for hand-written tables, BGA dog-bone fan-out, and a JLCPCB placement (CPL) file with sourced rotation corrections — and prove it with a recipe audit and KiCad's own DRC. Use this whenever the user wants parts placed or arranged on a board ("come up with a sensible PCB layout", "place the components", "floorplan this board", "where should the regulator go", "make the board smaller", "score this placement"), wants placement copied from reference designs or datasheet layout guidance, or wants code that writes .kicad_pcb files — even if they never say "placement". Also use it to fix an existing layout's overlaps, silkscreen or board size, or to plan stackup and controlled-impedance widths before routing. Not for drawing schematics (the kicad schematic layout skill does that) and not for judging whether a circuit is electrically sound (the kicad review skill does that).
+description: Lay out a KiCad PCB (.kicad_pcb) from Python — netlist-driven automatic placement using datasheet-derived recipes (regulator loops, decoupling, charger priority order, hub/codec/GNSS/M.2 rules), a reviewable floor plan with lock-and-rerun, module keep-outs (compute modules / SoMs on mezzanine connectors), double-sided boards, board outline, mounting holes and tidy silkscreen, decoupling rows for hand-written tables, BGA dog-bone fan-out, scripted and hybrid routing (critical nets from a script, Freerouting for the rest, ground pours, a reproducible result), and a JLCPCB placement (CPL) file with sourced rotation corrections — and prove it with a recipe audit and KiCad's own DRC. Use this whenever the user wants parts placed or arranged on a board ("come up with a sensible PCB layout", "place the components", "floorplan this board", "where should the regulator go", "make the board smaller", "score this placement"), wants placement copied from reference designs or datasheet layout guidance, asks to route a board or whether an autorouter is available ("route the board", "can you autoroute this", "pour ground"), or wants code that writes .kicad_pcb files — even if they never say "placement". Also use it to fix an existing layout's overlaps, silkscreen or board size, or to plan stackup and controlled-impedance widths before routing. Not for drawing schematics (the kicad schematic layout skill does that) and not for judging whether a circuit is electrically sound (the kicad review skill does that).
 ---
 
 # KiCad PCB placement
@@ -160,6 +160,25 @@ copper. When the user asks for it:
 - give switching loops and battery paths pours, not thin traces;
 - run DRC and report lengths. Leave the rest to the user or an autorouter
   (Freerouting has no differential-pair support).
+- **Routing a whole board: `scripts/routelib.py`** (copy it beside the project's `pcblib.py`).
+  `Router.pad(ref, n, expect=, net=)` asserts placement and netlist, `track` / `via` / `zone` /
+  `zone_connection` draw, `clear()` makes the script idempotent, `drc_report()` lists every DRC item
+  with its board-mm position, and `report()` says what DRC does not: how many pieces each pour is
+  in, every far-layer track (each one cuts that pour), via-in-pad, pair skew.
+- **Hybrid routing** is the default offer when the user asks for an autorouter: script the nets
+  where geometry *is* the design (switching loops, Kelvin taps, USB entry, power trunks, thermal
+  copper, every ground via and the pours) and give the rest to Freerouting with
+  `Router.autoroute(scripted_nets)`. Its result is stored in `routing/autoroute.json` and drawn by
+  `Router.replay()`, so ordinary runs are byte-identical and need no Java; `--autoroute` re-rolls it.
+  Freerouting is not bundled: it needs
+  the jar and a Java 25 runtime in `~/tools/freerouting` (or `FREEROUTING_HOME`) -- downloading them
+  is the user's call, ask first. The traps between KiCad 10 and Freerouting 2.4 are handled inside
+  `autoroute()` and listed in `references/troubleshooting.md`, "Hybrid routing".
+  **Always look at a picture of an autorouted result.** DRC passed a 25 mm detour under a module, a
+  dangling stub and a far-layer pour cut in two; `report()` and your eyes catch those.
+- **Routing changes placement.** Expect to move parts once copper shows the problem, and do it in
+  the placement table, not by bending tracks: see "Placing for routability" in
+  `references/placement-conventions.md`.
 - **A whole small board can be routed from a script**: `references/example_route_board.py`
   (2-layer, USB 2.0 pair, SOT-23-6 buck, ground pours; fabricated). The pattern that made it
   safe: every pad the router starts or ends on is asserted to be where the script expects,

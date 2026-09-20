@@ -74,6 +74,10 @@ At the connector, **in line** on D+/D−, shortest path to ground (ST
 datasheet §2.3). The recipe only claims its rail cap; the global placer
 pulls the block toward the connector through the heavy weight on USB data nets.
 
+Orientation is a routing decision: the array's two channels should sit in the same west/east order
+as the connector pads used for the main path AND as the destination pins, or the pair has to cross
+itself. 180 degrees swaps the channels. See "Placing for routability" in placement-conventions.md.
+
 ## Load switch (AP2151 / TPS2051)
 
 Input cap ≤ 2 mm, output cap ≤ 3 mm, flag/enable resistors ≤ 3 mm.

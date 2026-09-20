@@ -120,6 +120,35 @@ The same comparison gives origin offsets for connectors (HRO TYPE-C-31-M-12: 1.5
 signal pads). Also: a project copy of `jlc_cpl.py` looks for the default rules in
 `../references/`, which does not exist beside a project, so only the project file applies there.
 
+## Hybrid routing: scripted critical nets + Freerouting for the rest
+`scripts/routelib.py` does everything in this section (`Router.autoroute`, `replay`, `normalise`,
+`parse_ses`, `report`); the table is why it is written the way it is. Found on a 50-part
+2-layer board, KiCad 10.0.6 + Freerouting 2.4.1, 2026-09-20.
+Freerouting 2.4.1 needs **Java 25**; a portable Temurin JRE zip beside the jar is enough, nothing to
+install. Headless run: `java -jar freerouting.jar --gui.enabled=false --router.fanout.enabled=false
+--router.max_passes=30 --usage_and_diagnostic_data.disable_analytics=true --profile.allow_telemetry=false
+--user_data_path=<work dir> -de in.dsn -do out.ses`. The old `-inc`, `-da`, `-dct` switches are gone in
+2.4.x and `-l` is not what it was; settings are `--section.key=value`. Run it with `cwd` set to a work
+folder: it drops a log directory wherever it starts. 45 s for a 50-part board.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| the autorouter moves or rips up scripted tracks | `ExportSpecctraDSN` writes every existing track as `(type route)` | patch the DSN text: `(type route)` -> `(type protect)` |
+| `ImportSpecctraSES` returns False, no message | KiCad's importer refuses a session that carries `(type protect)` | read the SES yourself: `(routes (network_out (net NAME (wire (path LAYER W x y ...)) (via "Via[0-1]_600:300_um" x y))))`, units from `(resolution um 10)`, Y negated, page coordinates. Items without `(type protect)` are the new ones |
+| Freerouting lists scripted nets as unrouted and adds duplicate tracks | it does not count a track that ends inside a pad, off its centre, as connected (KiCad does); nor a T junction in mid-segment | split tracks at T junctions before export; keep a set of fully scripted nets and drop whatever it adds to them |
+| netclass names come out as `GND,Default` | KiCad 10 exports the class list, comma-joined | strip `,Default ` from the DSN text |
+| it routes ground as thin traces | ground is just another net to it | create the (unfilled) ground zones BEFORE the export: ground becomes a plane and is left alone. Fill after the autorouted tracks are in |
+| it scatters vias under every SMD part | the fan-out pre-pass | `--router.fanout.enabled=false` |
+| the result changes from run to run | the autorouter is not deterministic | store its new items as JSON in the project and replay them on ordinary runs; re-run it only when asked (`--autoroute`) |
+| one pin is boxed in by its neighbour's track (SDA behind SCL at an MSOP) | the autorouter takes pins in its own order | script short stubs that bring the pair in in the right order; it picks the stubs up at their free ends |
+| a signal takes a 25 mm detour under a module | a pull-up sits under the wrong pin and its track blocks the neighbour's exit | swap the two pull-ups; look at the picture after every autoroute, DRC will not complain |
+| a run leaves a connection open that the last run made | the autorouter is not deterministic across invocations | `autoroute(tries=3)` draws each result on a trial board and lets **KiCad's DRC** count what is unconnected on the autorouter's own nets, re-running until zero; `best_of=N` keeps the best of N by (open, far-layer length, vias) |
+| Freerouting's log lists connections as unrouted that KiCad shows connected | its log judges scripted copper by its own stricter rules | never use its log as the oracle; use the trial-board DRC |
+| `track_dangling` on a scripted stub | the autorouter joined the stub part-way along and left the rest | end stubs where it must arrive (keep them short), or re-roll |
+| far-layer ground comes out in two pieces, or a pad's thermal is starved, after a re-roll | a different run put a far-layer track or a top track somewhere new | `Router.report()` after every `--autoroute`; keep the stored run that was clean |
+Order that works: scripted routes -> ground vias and any net-specific zones -> ground zones (unfilled)
+-> split T junctions -> export -> Freerouting -> keep new items on non-scripted nets -> replay -> fill -> DRC.
+
 ## Things DRC will not tell you
 | Symptom | Cause | Fix |
 |---|---|---|

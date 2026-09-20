@@ -6,7 +6,7 @@ generate KiCad files from Python and then prove the result with KiCad's own tool
 | Skill | What it does | Oracle |
 |---|---|---|
 | [`kicad-schematic-layout`](skills/kicad-schematic-layout/SKILL.md) | Draws `.kicad_sch` files that read like a drafted schematic: hierarchical sheets, power ports, real wires and junctions, buses, titled functional blocks, on-sheet notes, ready-made subcircuits. Lints the spec before drawing. | `kicad-cli sch export netlist` must match the spec pin for pin; ERC; a text-collision check read from KiCad's own render |
-| [`kicad-pcb-placement`](skills/kicad-pcb-placement/SKILL.md) | Places footprints on a `.kicad_pcb` from the netlist using datasheet-derived recipes (regulator loops, decoupling, charger priority order, M.2, modules), with a reviewable floor plan, keep-outs, double-sided boards, outline, holes, silkscreen tidy, BGA fan-out, stackup and net classes, and a JLCPCB placement file. | a recipe audit (every distance limit, pass/fail) and `kicad-cli pcb drc`, split into placement problems and library-footprint problems |
+| [`kicad-pcb-placement`](skills/kicad-pcb-placement/SKILL.md) | Places footprints on a `.kicad_pcb` from the netlist using datasheet-derived recipes (regulator loops, decoupling, charger priority order, M.2, modules), with a reviewable floor plan, keep-outs, double-sided boards, outline, holes, silkscreen tidy, BGA fan-out, stackup and net classes, scripted and hybrid (Freerouting) routing, and a JLCPCB placement file. | a recipe audit (every distance limit, pass/fail) and `kicad-cli pcb drc`, split into placement problems and library-footprint problems |
 
 The idea behind both: **the generator is never trusted.** Every run ends by asking
 KiCad what was actually drawn or placed, and a mismatch is an error, not a warning.
@@ -38,6 +38,9 @@ skills/
     scripts/pcblib.py            board builder: outline, holes, keep-outs, schematic
                                  linking, reference tidy, stackup, net classes,
                                  fan-out, DRC split, render
+    scripts/routelib.py          scripted routing: pad asserts, tracks, vias, pours, and a
+                                 hybrid mode that hands the non-critical nets to Freerouting
+                                 and replays its stored result (see Status and caveats)
     scripts/jlc_cpl.py           JLCPCB CPL export with sourced rotation corrections
     references/                  placement conventions, recipe evidence, stackup and
                                  impedance, pcbnew API notes, troubleshooting, and six
@@ -101,6 +104,11 @@ result, and any crowded text.
 - Placement recipes cover the parts I have needed (buck/boost regulators, LDOs,
   BQ25792 charger, USB hub, codec, GNSS, M.2 sockets, compute modules on mezzanine connectors). A part
   without a recipe needs one written from its datasheet's layout section.
+- `routelib.py`'s hybrid routing needs [Freerouting](https://github.com/freerouting/freerouting)
+  2.4 and a Java 25 runtime in `~/tools/freerouting` (or `FREEROUTING_HOME`); neither is bundled.
+  It has routed one 50-part 2-layer board that has not been fabricated yet. Autorouter runs
+  differ from one to the next, so the library judges each with KiCad's DRC and stores the one
+  you keep - still look at the copper before trusting it. Two-layer boards only.
 - Impedance widths in `references/stackup-impedance.md` are starting points — confirm
   with your fab's calculator.
 - JLCPCB rotation corrections carry a `verified` flag and a source. Bottom-side
