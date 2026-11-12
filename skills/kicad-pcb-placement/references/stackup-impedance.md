@@ -24,19 +24,54 @@ island. It gives every outer-layer trace a ground reference, which matters
 the moment a fast net changes sides (a module on the bottom, M.2 on the top).
 Put a ground via beside every signal via on a layer change.
 
-## Outer-layer widths
+## Outer-layer widths -- JLCPCB's own, confirmed in their calculator 2026-09-20
 
-| Target | Width / gap | Source |
-|---|---|---|
-| 50 Ω single-ended | 0.324 mm | JITX JLC04161H_7628 library |
-| 90 Ω differential | 0.233 / 0.15 mm | JITX JLC04161H_7628 library |
-| 100 Ω differential | 0.172 / 0.15 mm | JITX JLC04161H_7628 library |
+jlcpcb.com/pcb-impedance-calculator: rigid, 4 layers, 1.6 mm, 1 oz outer / 0.5 oz
+inner, stackup JLC04161H-7628, signal L1 over L2 (L4 over L3 is identical).
+W1 (the width at the foot of the trace) is the number to draw.
 
-**Unconfirmed.** An independent IPC-2141A estimate reads about 7% high
-against these (96 Ω for the 90 Ω geometry). That formula is known to be
-crude, but the difference is enough that **widths must be taken from
-JLCPCB's own impedance calculator before routing.** Record the confirmed
-values here when you have them.
+These are in `pcblib.JLC_IMPEDANCE` as data: `jlc_width("JLC04161H-7628", "diff", 90, 6)`
+returns `(0.2474, 0.1524)`, and `jlc_pour_rules()` writes the matching `.kicad_dru`.
+When you read a new stackup or gap from the calculator, add it to that table as
+well as here.
+
+| Target | Gap | Width (mil) | Width (mm) |
+|---|---|---|---|
+| 90 ohm differential, microstrip | 5 mil | 8.61 | 0.2187 |
+| | **6 mil** | **9.74** | **0.2474** |
+| | 7 mil | 10.88 | 0.2764 |
+| | 8 mil | 11.44 | 0.2906 |
+| 100 ohm differential, microstrip | 5 mil | 6.05 | 0.1537 |
+| | **6 mil** | **7.19** | **0.1826** |
+| | 8 mil | 8.89 | 0.2258 |
+| | 10 mil | 10.02 | 0.2545 |
+| 50 ohm single-ended, microstrip | -- | 14.12 | 0.3586 |
+| 50 ohm coplanar (ground gap) | 6 mil | 10.36 | 0.2631 |
+| | **8 mil** | **12.04** | **0.3058** |
+| | 10 mil | 12.61 | 0.3203 |
+| | 20 mil | 13.73 | 0.3487 |
+
+Their model: H1 8.2835 mil at **Er 4.3** (not the 4.4 on the material sheet),
+finished outer copper 1.6 mil, etch taper W2 = W1 - 0.5 mil, solder mask
+1.0 / 0.6 / 1.0 mil at Er 3.8.
+
+**A pour beside a microstrip pair changes it.** Their coplanar-differential model:
+pour 20 mil away, 90 ohm needs 9.80 mil (+0.6 %); pour 8 mil away, 9.24 mil (-5 %).
+So either keep zones 0.5 mm from the pair classes with a `.kicad_dru` rule and use
+the microstrip figures, or route coplanar on purpose and use the coplanar figure
+with the gap held by a rule.
+
+What this replaced: the JITX library figures (0.324 / 0.233 / 0.172 mm) and an
+IPC-2141 estimate (0.322 / 0.234 / 0.186). Against JLCPCB's own solver the 90 ohm
+figures were 5 % narrow (~93 ohm) and the plain 50 ohm ones 10 % narrow (~53 ohm).
+Neither source models the solder mask or the etch taper.
+
+**Driving the calculator from a script:** it is a Vue app. Its results live in the
+page component's `impedanceList[templateIndex][row].impedancePicInfo.parameterData`
+(`W1.defaultValue` is the answer; `H1`, `Er1`, `T1`, `C1..C3`, `CEr` are the model
+inputs), filled only after that stackup's tab has been opened. The page needs a
+real viewport: with the browser pane hidden its transitions never finish and the
+result cells show stale and new values together.
 
 ## Interface rules
 

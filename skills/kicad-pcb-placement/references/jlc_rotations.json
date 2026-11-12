@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "Rotation corrections added to KiCad's CPL rotation for JLCPCB assembly, matched on the footprint name (library prefix stripped) as a regular expression. Keep this list short and sourced: a wrong entry rotates a part that was right. Put project-specific rules and per-designator overrides in <project>/jlc_rotations.json (same schema, plus \"overrides\": {\"U7\": {\"rotation\": 90, \"source\": \"...\"}}). Set \"verified\": true only after the correction was confirmed in JLCPCB's Component Placements preview on a real order. JLCPCB's zero orientation belongs to THEIR footprint for each LCSC part, not to the package name: C7519 and C116592 are both SOT-23-6 and need +270 and +180. Derive a correction by fetching the part's footprint (easyeda2kicad --lcsc_id Cxxxx --footprint) and comparing pin 1 with the KiCad footprint, then record it as a per-designator override.",
+  "about": "Rotation corrections added to KiCad's CPL rotation for JLCPCB assembly, matched on the footprint name (library prefix stripped) as a regular expression. Keep this list short and sourced: a wrong entry rotates a part that was right. Put project-specific rules and per-designator overrides in <project>/jlc_rotations.json (same schema, plus \"overrides\": {\"U7\": {\"rotation\": 90, \"source\": \"...\"}}). Set \"verified\": true only after the correction was confirmed in JLCPCB's Component Placements preview on a real order. JLCPCB's zero orientation belongs to THEIR footprint for each LCSC part, not to the package name: C7519 and C116592 are both SOT-23-6 and need +270 and +180. Derive a correction by fetching the part's footprint (easyeda2kicad --lcsc_id Cxxxx --footprint) and comparing pin 1 with the KiCad footprint, then record it as a per-designator override. Both confirmed on an assembled board 2026-09-29.",
   "rules": [
     {
       "id": "kicad-soic-8-3.9x4.9-p1.27",
@@ -13,8 +13,8 @@
       "id": "kicad-hro-type-c-31-m-12",
       "match": "^USB_C_Receptacle_HRO_TYPE-C-31-M-12",
       "rotation": 0,
-      "source": "JLCPCB/EasyEDA footprint for C165948 fetched 2026-09-20: same orientation as KiCad's HRO footprint (signal pads at -Y, opening at +Y), so NO rotation; the owner's JLCPCB viewer screenshot of the USBC_M2E_HaLow_Adapter agreed. Was 180 from Konnect issue #518, which this contradicts. JLCPCB's origin is 1.57 mm nearer the signal pads than KiCad's: add a per-designator offset_x/offset_y in the project file (it depends on the part's rotation on the board).",
-      "verified": false
+      "source": "JLCPCB/EasyEDA footprint for C165948 fetched 2026-09-20: same orientation as KiCad's HRO footprint (signal pads at -Y, opening at +Y), so NO rotation; the owner's JLCPCB viewer screenshot of the USBC_M2E_HaLow_Adapter agreed. Was 180 from Konnect issue #518, which this contradicts. JLCPCB's origin is 1.57 mm nearer the signal pads than KiCad's: add a per-designator offset_x/offset_y in the project file (it depends on the part's rotation on the board). Confirmed on an assembled order 2026-09-29 (USBC_M2E_HaLow_Adapter Rev A works).",
+      "verified": true
     }
   ],
   "overrides": {}

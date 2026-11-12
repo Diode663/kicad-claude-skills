@@ -99,6 +99,57 @@ A real professional sheet is mostly wires with a handful of labels — the
 KiCad demo *StickHub* has 470 wires to 26 labels. A generated sheet that is
 all labels and no wires reads as a netlist, not a drawing.
 
+### 4.1 Inside a block: wire. Between blocks: label.
+
+The rule above is about one connection. This one is about a block. A reader
+recognises a circuit by its shape: a divider, a boost converter, a
+two-transistor limiter. Two labels of the same name inside one block mean
+part of that shape exists only as text, and the reader has to rebuild it.
+`Sheet.label_joins()` lists them and `write()` prints the count. Zero is
+normal. Measured on a 52-part sheet drawn the old way: 20 joins, the worst a
+current limiter whose six parts were three islands. Redrawn: 0, with the same
+netlist and no crossings.
+
+A label that only *names* a wire is not a join and is worth having: it is the
+name the netlist, the board and the firmware use.
+
+When a wired drawing seems impossible, the usual causes, in order:
+
+1. **The symbol's pins are in package order.** Redraw it
+   (`Design.functional_symbol`): inputs left, outputs right, supply up, ground
+   down. A boost controller with SW and FB on the right and GND underneath
+   wires in three straight lines; the vendor's SOT-23-6 picture needs five
+   labels.
+2. **Duplicate pins.** A reversible connector's A6/B6, an ESD array's two pins
+   per line, an IC's three grounds: stack them on one drawn pin
+   (`("A6,B6", "D+")`). KiCad puts every stacked pin on the net.
+3. **A flow-through part** (in on pin 1, out on pin 6, same line). KiCad sees
+   two pins and two nets, so the line can only pass *by* the part: put the
+   part between the two lines of the pair, one passing over it and one under,
+   each tapping its own side.
+4. **Two lines that must swap order.** Let the lower one drop first and pass
+   underneath (a pull-down pair: the lower line's resistor is the nearer
+   one).
+
+### 4.2 The shape of a circuit
+
+Draw what the part's datasheet draws on its first page, because that is the
+picture the reader already has:
+
+- one power path left to right along a single rail; ground returns hang
+  below it, and each ends in its own ground port at the part's pin;
+- the controller below the path it controls, sense and feedback wired back
+  to it;
+- series elements (fuse, sense resistor, blocking diode, ferrite) *in* the
+  line, shunt elements (clamp, capacitor, divider) hanging off it, in the
+  order the current meets them;
+- the block's inputs on its left edge and outputs on its right, so blocks
+  chain across the page.
+
+Anchor every wire on `s.pin()`. A block written against typed coordinates
+breaks the day a symbol changes size; one written against its pins redraws
+itself.
+
 ## 5. Routing recipes (the hard cases)
 
 ### 5.1 End in a port instead of reaching a rail
@@ -228,6 +279,7 @@ for anything that isn't a one- or two-segment local connection (section 4).
 `Design.verify()` catches a wire you left spanning two blocks, because the
 net breaks the moment they are flowed apart.
 
+
 ### How big is a block?
 
 One block per **circuit**: the unit a reference design gives its own heading.
@@ -324,6 +376,20 @@ rules, not in the drawing.
 
 ## 7. Page composition
 
+- **A3 is the ceiling for a sheet people will print.** A3 shrunk to A4 keeps
+  1.27 mm text at 0.9 mm; A2 halves it, and the 1.0 mm notes disappear.
+  `write()` says so when a sheet is larger than A3.
+- **Compose, then flow.** `arrange()` flows blocks in rows, and a row is as
+  tall as its tallest block: three blocks of 65, 50 and 95 mm leave 30 and
+  45 mm of dead space under the first two. `arrange(layout=[...])` puts a
+  small block into each such space (rows of columns of stacks; see SKILL.md).
+  On the 52-part sheet: flowed, A2 at 98 % x 75 %; composed, with notes moved
+  into dead corners and a 3.81 mm pad, A3 at 93 % x 98 %.
+- **Shrink a block from the inside** before splitting a sheet: notes into the
+  corners the circuit leaves empty, one line per `note()` at 2.54 mm pitch
+  (a multi-line string renders tighter than that and looks cramped), ground
+  ports directly on a part's pin instead of on a stub, the title no wider
+  than the circuit.
 - **Match paper to content.** A big page with a small drawing in one corner
   looks unfinished. Aim for the drawing to fill roughly 70–100% of the
   usable area. `paper="auto"` or `Sheet.suggest_paper()` picks the smallest
@@ -351,6 +417,10 @@ Before calling a sheet done:
 - [ ] blocks read left to right, top to bottom, in signal order
 - [ ] `check_text()` -> 0 collisions, crowding list empty or every entry
       explained
+- [ ] `0 label joins inside a block`, or each one is a wire that would cross
+- [ ] each block has the shape of its datasheet circuit; inputs left, outputs
+      right
+- [ ] A3 or smaller, or the reason it is not
 - [ ] drawing fills the page; title block filled in
 
 

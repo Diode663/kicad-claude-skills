@@ -179,3 +179,58 @@ Order that works: scripted routes -> ground vias and any net-specific zones -> g
   part, offset it by the difference between the two footprints' pads or stakes.
 - STEP heights without a CAD kernel: the extremes of `CARTESIAN_POINT` are good enough for a
   clearance check.
+
+## A converted footprint's pad NUMBERS are a claim, not a fact
+
+ERC, schematic parity and DRC all agree when a footprint numbers its pads differently from the
+part: the netlist is consistent, the board is wrong. It cost one compute-module carrier its module connectors:
+the EasyEDA DF40C-100DS footprint numbered 1-50 along one row and 51-100 back along the other,
+while the CM4's numbering is zigzag (odd row / even row, pin 1 opposite pin 2) -- Hirose does
+not number DF40 contacts at all, so the module maker's numbering is the only one that counts.
+With CM4 pin numbers on the symbol, +5 V landed on module grounds.
+
+- For every multi-row connector and every module socket, find the numbering authority (the
+  module's datasheet, not the connector's) and check pads 1, 2, 3 and the last two against it.
+- Where a reference footprint exists (a vendor's published board), fit ALL pads to it with a
+  rigid motion (rotation, optional mirror, translation; least squares over every pad) and read
+  off the required position of the second connector. Zero error or it is wrong.
+- Prefer KiCad's stock footprint when one exists; check its handedness the same way.
+
+## Converted footprints draw the courtyard round the body
+
+On one project 24 of 27 EasyEDA footprints had pads 0.14-2.1 mm OUTSIDE their courtyard (SOIC,
+SOT-23, SSOP, LQFP, magnetics, connectors). KiCad's courtyard check then lets a part sit on
+another's leads, which matters most when a human is placing. Measure it (pads' bounding box
+against `GetCourtyard().BBox()`), and rewrite the courtyard to cover pads + 0.25 mm
+(the smallest rectangle holding the old courtyard and every grown pad). Edit the file as text -- `pcbnew.FootprintSave`
+rewrites the whole footprint in the current format and then raises, in KiCad 10.
+A board keeps its own copies: `refresh_footprints()`, then re-sync the fields it drops.
+
+## Flip() on a footprint that is not on a board yet can segfault
+
+`FootprintLoad()` then `Flip()` then `board.Add()` crashed pcbnew 10.0.6 with a stock library
+footprint (no Python error: exit code 139 with the output cut short). Add the footprint to the
+board first, then set position, flip, and set the orientation last. `refresh_footprints()` and
+any swap code must use that order.
+
+## Removing a footprint that belongs to a PCB_GROUP
+
+Take it out of the group first (`item.GetParentGroup().RemoveItem(item)`); the group holds a raw
+pointer. `Board._remove()` does this.
+
+## Learned re-laying a corner of a sensor board (2026-11-11)
+
+- **A part's live pad under a standoff.** DRC said `npth_inside_courtyard` and nothing else: the
+  pad was 0.46 mm from the hole's edge, which is legal, and 1.6 mm from its centre, which is
+  under the head of any screw or standoff fitted there. Check distance to the hole's CENTRE
+  against the hardware's radius for every pad near a mounting hole.
+- **Designators lose their place when parts move in beside them.** `tidy_references()` re-seats
+  them wherever is free, which may be against another footprint's silk. After a re-lay, read the
+  `silk_overlap` list and pin the ones it names (`REF_PINS`); a designator with no legal spot is
+  hidden with `hide=(...)` and named in the documentation instead.
+- **Silkscreen text metrics.** Legend text 1.0 mm high is about 1.0 mm per character wide
+  including spacing; its bounding box is 1.7 mm tall, the glyphs 1.0. Lines need 1.5 mm pitch to
+  clear each other's 0.15 mm silk clearance. 0.8 mm text: 0.8 mm per character.
+- **`jlc_compare.py` reports "no footprint" for every part** when the `python` it shells out to
+  lacks easyeda2kicad (KiCad's own Python does). Pass `--python` with the interpreter that has
+  it. HTTP 403 after a couple of dozen fetches is the API's burst limit: run again later.

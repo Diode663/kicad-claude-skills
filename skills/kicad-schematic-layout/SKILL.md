@@ -128,6 +128,13 @@ sheets.
   processing, output. **Declare the blocks in that order** — `arrange()`
   places them in declaration order, left to right and wrapping top to
   bottom, which is how a reader scans the page.
+- **Aim for A3 or smaller.** Most people who are handed a schematic print it
+  on A4 or Letter or read it on a laptop. A3 on A4 is 71 %: 1.27 mm text
+  comes out 0.9 mm, still readable. A2 on A4 is 50 %: 0.64 mm text, and the
+  1.0 mm notes are gone. `write()` prints a note when a sheet is larger than
+  A3. The fix is, in order: tighten the blocks (notes into the dead corners,
+  ground ports at the part's pin), compose the page by hand (below), and only
+  then split into more sheets.
 
 Read **`references/layout-conventions.md`** now if you haven't this session.
 It has the decision rules and the routing recipes for the hard cases.
@@ -184,6 +191,27 @@ with s.block("3.3 V REGULATION"):        # or block_start()/block_end()
   group with no outline of its own, `width=0` stacks its children in one
   column, and an explicit `width=` sets their wrap width.
 - `arrange()` also grows the paper (A4 → A3 → A2 → A1) until the sheet fits.
+- **Compose the page when the flow wastes it.** The flow fills each row to
+  the height of its tallest block and leaves the space under every shorter
+  one empty; on a sheet of mixed block sizes that is often the difference
+  between A3 and A2. `arrange(layout=[...])` places the blocks where you say:
+  a list of rows, each a list of columns, each a block title (any unique
+  leading part of it) or a list stacked top to bottom, nesting as deep as
+  needed:
+
+  ```python
+  s.arrange(gutter=10.16, layout=[
+      ["USB-C", ["3.3 V", "TEST POINTS"], "MCU"],           # three columns
+      [["BOOST", ["LIMITER", "LEGEND"]], "LOOP TERMINAL"],  # boost over a row of two
+  ])
+  ```
+
+  Print the block sizes first (`s.block_extent(b)` after a plain
+  `arrange()`), do the sums against `s.usable_area("A3")`, and keep the
+  signal order: supply side along the top, the output side along the bottom.
+  A block's title counts toward its width; shorten a title that is wider
+  than its circuit. `block_start(title, pad=3.81)` instead of the default
+  5.08 buys 2.5 mm per block in each direction.
 - A note that sits loose inside a *container* keeps its old coordinates
   while the children move around it. Give it a block of its own
   (`s.block_start(None, pad=None)`) so it flows too.
@@ -205,6 +233,42 @@ eight regions for a 50-part board. Splitting finer scatters one circuit's
 wires across box lines, which is exactly where labels and outlines collide,
 and it makes the reader reassemble the circuit. Twelve boxes on a 50-part
 sheet was too many; the owner asked for them to be merged.
+
+**Inside a block, wire it. Between blocks, label it.** A label joins things
+a wire cannot sensibly reach: another block, another sheet. Inside a block the
+reader expects to follow a line, and two labels with the same name in one
+block mean two halves of one small circuit are joined only by name. A
+two-transistor current limiter drawn as five labelled stubs is a netlist with
+pictures; the same six parts wired are a circuit anyone recognises.
+`check()` counts these (`Sheet.label_joins()`) and `write()` prints the count:
+`0 label joins inside a block` is the target, and each one that remains should
+be a wire that would otherwise have to cross another. One label on a wire is a
+net *name* and is not counted; keep those, they are what the netlist and the
+board call the net.
+
+**Draw each circuit in the shape its datasheet draws it.** Power along one
+rail left to right, ground returns hanging down from it, the controller under
+the path it controls, feedback wired back from the output, inputs on the
+block's left edge and outputs on its right. A boost converter is input cap,
+inductor, switch node, rectifier, output cap along one line with the IC
+underneath; a current-sense front end is terminal, clamp, fuse, shunt, filter,
+amplifier in the order the current meets them. If the drawing cannot take that
+shape because the symbol's pins are in the wrong places, change the symbol
+(next paragraph), not the circuit's shape.
+
+**Redraw a symbol whose pins fight the drawing.** Vendor and EasyEDA symbols
+put pins in *package* order: SW, GND, FB down one flank of a boost controller,
+or sixteen separate pins on a USB-C receptacle. `d.functional_symbol(name,
+left=[...], right=[...], top=[...], bottom=[...])` writes a symbol with the
+pins where a reader expects them and returns its lib_id: inputs left, outputs
+right, supply on top, ground underneath, in the order the circuit flows.
+`("A6,B6", "D+")` stacks several pads on one drawn pin (a reversible plug's
+duplicate contacts, an IC's two ground pins). The body is sized so the names
+never collide, pin lengths fit their numbers, and real pin types quiet the
+`pin_to_pin` ERC noise that all-passive vendor symbols make. The footprint is
+untouched: only the picture changes, and `verify()` still proves the netlist.
+Anchor the block's wiring on `s.pin()` afterwards, never on typed
+coordinates, so a resized symbol does not strand its wires.
 
 **Nothing may touch an outline.** `check_text()` reads KiCad's render and
 reports every string and part body within `OUTLINE_CLEAR` (0.8 mm) of any
@@ -241,7 +305,8 @@ The full API is documented in docstrings: `place`, `power`, `gnd`, `pin`,
 `pin_dir`, `pins_of`, `wire`, `route`, `stub`, `label`, `hlabel`, `nc`,
 `bus`, `bus_entry`, `bus_label`, `pins_to_bus`, `lint_spec`/`Design.lint`,
 `note`, `block`/`block_start`/`block_end`, `arrange`, `box`, `check`,
-`check_blocks`, `check_spacing`, `suggest_paper`, `center_on_page`. A single
+`check_blocks`, `check_spacing`, `label_joins`, `suggest_paper`,
+`center_on_page`, and `Design.functional_symbol`. A single
 sheet with no `root_sheet()` becomes a flat design automatically.
 
 Coordinates are millimetres with Y pointing down. Keep **every** pin, wire
@@ -256,7 +321,7 @@ order (blank otherwise -- fill them with the lcsc skill, never from memory):
 | Block | What it draws |
 |---|---|
 | `Ldo` | AP2112K-3.3 (EN tied or brought out) or AMS1117-3.3, in/out caps |
-| `UsbCSink` | USB-C 2.0 receptacle, 5.1k on each CC, flip pairs joined, USBLC6 ESD, PWR_FLAGs. Pass `dp="USB_D_P", dm="USB_D_N"` so KiCad sees a differential pair; `esd_vbus=False` leaves the array's VBUS pin open for 2-layer flow-through layouts |
+| `UsbCSink` | USB-C 2.0 receptacle, 5.1k on each CC, USBLC6 ESD, PWR_FLAGs, drawn fully wired on two functional symbols it writes into the project (duplicate contacts stacked; the clamp between the two data lines), so the sheet must come from `Design.sheet()`. Pass `dp="USB_D_P", dm="USB_D_N"` so KiCad sees a differential pair; `esd_vbus=False` leaves the array's VBUS pin open for 2-layer flow-through layouts |
 | `Esp32S3Core` | WROOM-1, 10 uF + 100 nF, EN RC + RESET, BOOT on IO0, native USB, GPIOs on labels, the rest NC |
 | `Mt3608Boost` | 5 V -> 24 V (Vout = 0.6 x (1 + Rtop/Rbot)), EN pull-up when EN is a GPIO, PWR_FLAG |
 | `Ina226LoopSense` | 4-20 mA terminal, TVS, low-side shunt, Kelvin RC filter, INA226 at 0x40 |
@@ -280,7 +345,9 @@ to `spec.PARTS`/`spec.NETS` and `refs.reserve()` their designators. Change a
 part by editing `block.parts[ref]` before drawing. A new block is a `Block`
 subclass -- parts and `conn()` in `__init__`, geometry in `_draw()` -- and it
 is not done until `verify()`, `erc()` and `check_text()` are clean on a test
-sheet. Copy `subcircuits.py` into the project next to `schlib.py`.
+sheet and `label_joins()` is empty or every entry has a reason (the ESP32
+core keeps one: IO0 to the BOOT button, whose wire would cross the reset
+network). Copy `subcircuits.py` into the project next to `schlib.py`.
 
 ### 3b. Draw the conventions, don't reinvent them
 `s.rail_bank(refs, x, y, rail, place=...)` draws a decoupling or bulk bank the
@@ -354,7 +421,8 @@ Target **0 errors**:
 - `power_pin_not_driven` → add a `PWR_FLAG` where that rail enters the
   board.
 - `pin_to_pin` warnings on LCSC/EasyEDA symbols are expected, because their
-  pins are typed "unspecified".
+  pins are typed "unspecified". A part redrawn with
+  `Design.functional_symbol` has real pin types and stops producing them.
 - `lib_symbol_mismatch` is expected for generated files.
 
 ### 7. Render it and look — then iterate
@@ -386,6 +454,13 @@ A netlist match says nothing about appearance, so look at every sheet.
    session keeps answering on 8731 from its old folder, and you review last
    week's drawing with no error anywhere; the SVG's `<title>` carries the
    render time -- check it when something looks familiar.
+
+5. **No browser pane, or it will not paint?** Rasterise the SVGs yourself and
+   read the PNGs. On Windows, headless Edge does it with nothing to install:
+   `msedge.exe --headless --disable-gpu --hide-scrollbars
+   --window-size=1900,1300 --screenshot=out.png file:///C:/.../p1_b3.svg`.
+   Run them one at a time (parallel runs drop outputs) and give the whole-page
+   SVG a pixel `width`/`height` first, or the window shows only its corner.
 
 Before the visual pass, run **`d.check_text()`**. It renders every sheet and
 reads KiCad's own SVG, where every string is an element with an exact
@@ -526,6 +601,17 @@ Each is explained in `references/troubleshooting.md`.
   unreadable smear. Use horizontal net labels on the flank (the rail keeps
   its identity from the power port on its decoupling cap), and bundle the
   ground pins onto one bar with a single GND symbol clear of the label lane.
+- **A sheet label directly above a net label, on adjacent 2.54 mm pins, is
+  0.67 mm apart** -- a hierarchical label is centred on its wire, a net label
+  sits above its own. The other order is fine. Stagger the stubs so the two
+  strings share no x (the shorter string keeps the short stub). The same goes
+  for two sideways power ports two pins apart: equal stubs stand their names
+  end to end, unequal stubs give each its own column.
+- **Two parts whose pins face each other 5.08 mm apart must be wired, not
+  given a 2.54 mm port stub each.** The stubs meet end to end, so the net is
+  right and nothing complains -- but two ports are stacked on one point and
+  the rail name lands on the neighbouring value. Seen between an inductor and
+  its output cap, and between the two resistors of a divider.
 - **A net name ending in `N` is half a differential pair as far as KiCad is
   concerned.** `GPS_RF_IN` sent it looking for `GPS_RF_IP`; `RESET_N` will
   couple to `RESET_P` the moment such a net exists. For active-low signals

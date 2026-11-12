@@ -5,8 +5,8 @@ generate KiCad files from Python and then prove the result with KiCad's own tool
 
 | Skill | What it does | Oracle |
 |---|---|---|
-| [`kicad-schematic-layout`](skills/kicad-schematic-layout/SKILL.md) | Draws `.kicad_sch` files that read like a drafted schematic: hierarchical sheets, power ports, real wires and junctions, buses, titled functional blocks (one per circuit, outlines derived from their contents), on-sheet notes, ready-made subcircuits. Lints the spec before drawing. | `kicad-cli sch export netlist` must match the spec pin for pin; ERC; a text-collision, crowding and text-on-outline check read from KiCad's own render |
-| [`kicad-pcb-placement`](skills/kicad-pcb-placement/SKILL.md) | Places footprints on a `.kicad_pcb` from the netlist using datasheet-derived recipes (regulator loops, decoupling, charger priority order, M.2, modules), with a reviewable floor plan, keep-outs, double-sided boards, outline, holes, silkscreen tidy, BGA fan-out, stackup and net classes, scripted and hybrid (Freerouting) routing, and a JLCPCB placement file. | a recipe audit (every distance limit, pass/fail) and `kicad-cli pcb drc`, split into placement problems and library-footprint problems |
+| [`kicad-schematic-layout`](skills/kicad-schematic-layout/SKILL.md) | Draws `.kicad_sch` files that read like a drafted schematic: hierarchical sheets, power ports, real wires and junctions, buses, titled functional blocks (one per circuit, wired inside, outlines derived from their contents), symbols redrawn with pins by function, pages composed to fit A3, on-sheet notes, ready-made subcircuits. Lints the spec before drawing. | `kicad-cli sch export netlist` must match the spec pin for pin; ERC; a text-collision, crowding and text-on-outline check read from KiCad's own render |
+| [`kicad-pcb-placement`](skills/kicad-pcb-placement/SKILL.md) | Places footprints on a `.kicad_pcb` from the netlist using datasheet-derived recipes (regulator loops, decoupling, charger priority order, M.2, modules), with a reviewable floor plan, keep-outs, double-sided boards, outline, holes, silkscreen tidy and legend, BGA fan-out, stackup and net classes (JLCPCB impedance widths on file), functional groups parked off the board for hand placement, scripted and hybrid (Freerouting) routing, and a JLCPCB placement file. | a recipe audit (every distance limit, pass/fail) and `kicad-cli pcb drc`, split into placement problems and library-footprint problems |
 
 The idea behind both: **the generator is never trusted.** Every run ends by asking
 KiCad what was actually drawn or placed, and a mismatch is an error, not a warning.
@@ -22,7 +22,8 @@ modules you can import from your own generator scripts.
 skills/
   kicad-schematic-layout/
     SKILL.md                     workflow, API summary, gotchas
-    scripts/schlib.py            the schematic writer and its checks
+    scripts/schlib.py            the schematic writer and its checks (netlist match, text
+                                 collisions, label joins inside a block, print size)
     scripts/subcircuits.py       LDO, USB-C sink, ESP32-S3 core, MT3608 boost,
                                  INA226 4-20 mA input, I2C pull-ups, LED
     scripts/block_crops.py       one full-size SVG per block, for looking at the result
@@ -37,8 +38,11 @@ skills/
     scripts/autoplace.py         netlist + recipe driven placer, floor plan, audit
     scripts/recipes.py           the placement rules, each with its source
     scripts/pcblib.py            board builder: outline, holes, keep-outs, schematic
-                                 linking, reference tidy, stackup, net classes,
+                                 linking, reference tidy, silkscreen legend, stackup,
+                                 net classes, JLCPCB impedance widths and pour rules,
                                  fan-out, DRC split, render
+    scripts/grouplib.py          functional groups: each circuit arranged as its datasheet
+                                 draws it, bound into a KiCad group and parked off the board
     scripts/routelib.py          scripted routing: pad asserts, tracks, vias, pours, and a
                                  hybrid mode that hands the non-critical nets to Freerouting
                                  and replays its stored result (see Status and caveats)
@@ -112,8 +116,9 @@ result, and any crowded text.
   It has routed one 50-part 2-layer board that has not been fabricated yet. Autorouter runs
   differ from one to the next, so the library judges each with KiCad's DRC and stores the one
   you keep - still look at the copper before trusting it. Two-layer boards only.
-- Impedance widths in `references/stackup-impedance.md` are starting points — confirm
-  with your fab's calculator.
+- Impedance widths in `references/stackup-impedance.md` were read from JLCPCB's own calculator
+  for two of its standard stackups (JLC04161H-7628, also in `pcblib.JLC_IMPEDANCE`, and
+  JLC0216A) on the dates given there. For any other stackup or fab, read that fab's calculator.
 - JLCPCB rotation corrections carry a `verified` flag and a source. Bottom-side
   correction sign is not yet confirmed on a real order; the exporter flags those rows.
 - LCSC part numbers in `subcircuits.py` come from my own boards' BOMs; check stock and

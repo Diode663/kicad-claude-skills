@@ -459,55 +459,101 @@ class UsbCSink(Block):
         self.notes = ["CC1/CC2: 5.1k to GND each -- one shared resistor",
                       "breaks C-to-C cables. Route D+/D- as a 90 ohm pair."]
 
+    def _symbols(self, s):
+        """Swap the two stock symbols for functional ones, written into the
+        project. The stock receptacle has a pin per contact and the stock
+        clamp is drawn flow-through (1 in, 6 out), which KiCad reads as two
+        nets -- so every stock drawing of this block ends up joined by labels.
+        Stacking a reversible plug's duplicate contacts on one drawn pin, and
+        the clamp's two pins per line on one, lets the whole block be wired."""
+        d = getattr(s, "design", None)
+        if d is None:
+            raise RuntimeError("UsbCSink draws with functional symbols: make the sheet with "
+                               "Design.sheet() / root_sheet() so the block can reach the design")
+        lib_id = d.functional_symbol(
+            "USB_C_Receptacle_2.0", ref="J",
+            right=[("A4,A9,B4,B9", "VBUS"), ("A7,B7", "D-", "io"), ("A6,B6", "D+", "io"),
+                   ("A5", "CC1"), ("B5", "CC2"), ("A8", "SBU1"), ("B8", "SBU2")],
+            bottom=[("A1,A12,B1,B12", "GND"), ("SH", "SHIELD")])
+        self.parts[self.j] = (lib_id,) + tuple(self.parts[self.j][1:])
+        if self.esd:
+            lib_id = d.functional_symbol(
+                "USBLC6-2SC6", ref="U",
+                top=[("1,6", "IO1")], bottom=[("3,4", "IO2")], left=[("5", "VBUS")], right=[("2", "GND")])
+            self.parts[self.esd] = (lib_id,) + tuple(self.parts[self.esd][1:])
+
     def _draw(self, s, x, y):
+        # Left to right: the connector, VBUS up to its rail, the CC pulldowns
+        # hanging off their pins, then the data pair with the clamp BETWEEN
+        # the two lines -- D- over it, D+ dropping under it -- so each line
+        # taps its own side and neither crosses the other. Every connection
+        # is a wire; the four labels name nets.
+        self._symbols(s)
         j = self.j
         self.put(s, j, x, y)
-        vb = s.pin(j, "A4")
-        s.wire(vb, (vb[0] + 5.08, vb[1]))
-        self.drop(s, self.vbus, (vb[0] + 5.08, vb[1]), 2.54)
-        g = s.stub(j, "A1", 2.54, power=self.gnd)
+        vb, dn, dp = s.pin(j, "A4"), s.pin(j, "A7"), s.pin(j, "A6")
+        c1, c2 = s.pin(j, "A5"), s.pin(j, "B5")
+        s.nc(j, "A8", "B8")
+        X = vb[0]                             # where the connector's pins end
+        s.wire(vb, (X + 3.81, vb[1]))
+        self.drop(s, self.vbus, (X + 3.81, vb[1]), 7.62)
         if self.flag:
             # both rails enter the board here, and the connector's pins are
             # passive: ERC needs to be told something drives them
-            s.wire((vb[0] + 5.08, vb[1]), (vb[0] + 12.7, vb[1]), (vb[0] + 12.7, vb[1] - 2.54))
-            s.power("PWR_FLAG", vb[0] + 12.7, vb[1] - 2.54)
-            s.wire(g, (g[0] + 5.08, g[1]))
-            s.power("PWR_FLAG", g[0] + 5.08, g[1], rot=180)
-        if self.shield:
-            s.stub(j, "SH", 2.54, power=self.shield)
-        else:
-            s.nc(j, "SH")
-        s.nc(j, "A8", "B8")
-        s.stub(j, "A5", 2.54, label=self.cc[0])
-        s.stub(j, "B5", 12.7, label=self.cc[1])
-        # join each flip pair with a short jog, then label the pair once
-        for a, b, net, out in (("A7", "B7", self.dm, "A7"), ("A6", "B6", self.dp, "B6")):
-            pa, pb = s.pin(j, a), s.pin(j, b)
-            xj = pa[0] + 2.54
-            s.wire(pa, (xj, pa[1]))
-            s.wire(pb, (xj, pb[1]))
-            s.wire((xj, pa[1]), (xj, pb[1]))
-            po = pa if out == a else pb
-            s.wire((xj, po[1]), (xj + 7.62, po[1]))
-            s.label(net, xj + 7.62, po[1])
-        # CC resistors: a pair standing to the right, each on its own label
-        rx = vb[0] + 25.4
-        for i, (r, net) in enumerate(((self.r1, self.cc[0]), (self.r2, self.cc[1]))):
-            self.put(s, r, rx + i * 10.16, y - 5.08)
-            s.stub(r, 1, 2.54, label=net)
-            s.stub(r, 2, 2.54, power=self.gnd)
+            s.wire((X + 3.81, vb[1]), (X + 8.89, vb[1]), (X + 8.89, vb[1] - 2.54))
+            s.power("PWR_FLAG", X + 8.89, vb[1] - 2.54)
+
+        # CC pulldowns: the lower line's resistor is the nearer one, so neither drop crosses
+        self.put(s, self.r2, X + 8.89, c2[1] + 7.62)
+        self.put(s, self.r1, X + 16.51, c2[1] + 7.62)
+        s.wire(c2, (X + 8.89, c2[1]), s.pin(self.r2, 1))
+        s.wire(c1, (X + 16.51, c1[1]), s.pin(self.r1, 1))
+        s.label(self.cc[0], X + 10.16, c1[1])
+        s.label(self.cc[1], X + 2.54, c2[1])
+        for r in (self.r1, self.r2):
+            self.drop(s, self.gnd, s.pin(r, 2), 2.54, up=False)
+
         if self.esd:
             e = self.esd
-            self.put(s, e, rx + 5.08, y + 15.24)
-            s.stub(e, 1, 5.08, label=self.dm)
-            s.stub(e, 3, 5.08, label=self.dp)
-            s.stub(e, 6, 5.08, label=self.dm)
-            s.stub(e, 4, 5.08, label=self.dp)
+            DX = X + 44.45
+            self.put(s, e, DX, dn[1] + 15.24)
+            io1, io2 = s.pin(e, 1), s.pin(e, 3)
+            yu = io2[1] + 5.08                # the lower run
+            s.wire(dn, (DX + 30.48, dn[1]))
+            s.label(self.dm, DX + 30.48, dn[1])
+            s.wire(io1, (io1[0], dn[1]))
+            s.wire(dp, (X + 26.67, dp[1]), (X + 26.67, yu), (DX + 25.4, yu), (DX + 25.4, dp[1]),
+                   (DX + 30.48, dp[1]))
+            s.label(self.dp, DX + 30.48, dp[1])
+            s.wire(io2, (io2[0], yu))
+            dv, dg = s.pin(e, 5), s.pin(e, 2)
             if self.esd_vbus:
-                s.stub(e, 5, 2.54, power=self.vbus)
+                s.wire(dv, (dv[0] - 3.81, dv[1]))
+                self.drop(s, self.vbus, (dv[0] - 3.81, dv[1]), 5.08)
             else:
                 s.nc(e, 5)
-            s.stub(e, 2, 2.54, power=self.gnd)
+            s.wire(dg, (dg[0] + 2.54, dg[1]))
+            self.drop(s, self.gnd, (dg[0] + 2.54, dg[1]), 2.54, up=False)
+        else:
+            for pin, net in ((dn, self.dm), (dp, self.dp)):
+                s.wire(pin, (X + 27.94, pin[1]))
+                s.label(net, X + 27.94, pin[1])
+
+        # ground, and the shell with it unless it has a net of its own
+        g, sh = s.pin(j, "A1"), s.pin(j, "SH")
+        yg = g[1] + 2.54
+        s.wire(g, (g[0], yg))
+        if self.flag:
+            s.wire((g[0], yg), (g[0] - 5.08, yg))
+            s.power("PWR_FLAG", g[0] - 5.08, yg)
+        self.drop(s, self.gnd, (g[0], yg), 2.54, up=False)
+        if not self.shield:
+            s.nc(j, "SH")
+        elif self.shield == self.gnd:
+            s.wire(sh, (sh[0], yg), (g[0], yg))
+        else:
+            s.wire(sh, (sh[0], yg), (sh[0] + 5.08, yg))
+            self.drop(s, self.shield, (sh[0] + 5.08, yg), 2.54, up=False)
 
 
 class I2cPullups(Block):

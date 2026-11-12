@@ -196,7 +196,7 @@ USB_HUB = Recipe(
              max_mm=5.0, prio=5, count=0),
     ],
     sources=("measured: official RPi CM4 IO board USB2514 (100 nF 1.4-1.8, straps 2.0-2.3, crystal caps 3.8-4.0 mm)",
-             "FE1.1s datasheet pin table: 10 uF on VD18_O and VD33_O"),
+             "FE1.1s datasheet pin table: 10 uF on VREG18 and a filter cap on VD33F. The 1.8 V pin exists on the LQFP-48 only: on the Rev. B SSOP-28 pins 12 and 28 are NC and get no capacitor"),
 )
 
 USB_AUDIO = Recipe(

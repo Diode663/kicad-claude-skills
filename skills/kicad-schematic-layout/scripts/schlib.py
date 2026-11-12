@@ -702,6 +702,162 @@ class Library:
 
 
 # ===========================================================================
+# Functional symbols
+# ===========================================================================
+_PIN_TYPES = {"in": "input", "out": "output", "io": "bidirectional", "pwr": "power_in",
+              "pwr_out": "power_out", "pas": "passive", "nc": "no_connect", "oc": "open_collector",
+              "tri": "tri_state"}
+
+
+def functional_symbol(lib_path, name, left=(), right=(), top=(), bottom=(), ref="U",
+                      footprint="", datasheet="", description="", cli=None):
+    """Write a symbol whose pins are where a reader expects them, and return its name.
+
+    Vendor and EasyEDA symbols put pins in PACKAGE order -- SW, GND, FB down
+    one flank of a boost controller -- and a sheet drawn with them has to
+    contort: ground stuck between two signals, feedback crossing the supply.
+    A drafter redraws the part: supply on top, ground underneath, inputs on
+    the left, outputs on the right, in the order the circuit flows. This does
+    that from four lists.
+
+    Each side is a list of pins, in order (left/right: top to bottom;
+    top/bottom: left to right). A pin is (number, name) or
+    (number, name, type); type is one of in, out, io, pwr, pwr_out, pas, nc,
+    oc, tri (default pas) or a KiCad type name. None leaves a gap. Several
+    numbers for one name -- ("2,4", "GND") -- stack as KiCad expects: one
+    visible pin, the rest hidden on top of it.
+
+    The symbol is written into `lib_path` (created if missing, replaced if it
+    is already there) in minimal syntax and then passed through
+    `kicad-cli sym upgrade`, so what the library holds is KiCad's own text and
+    the native-format check has nothing to disagree with. Pins land on the
+    1.27 mm grid; real pin types also quiet the pin_to_pin ERC noise that
+    all-"unspecified" vendor symbols make.
+
+    Register the library (Design.functional_symbol does) and place it like
+    any other: s.place("U5", f"{nick}:{name}", ...)."""
+    P = 2.54
+
+    def norm(side):
+        out = []
+        for it in side:
+            if it is None:
+                out.append(None)
+                continue
+            num, nm = str(it[0]), str(it[1])
+            ty = it[2] if len(it) > 2 else "pas"
+            out.append((num.split(","), nm, _PIN_TYPES.get(ty, ty)))
+        return out
+    left, right, top, bottom = norm(left), norm(right), norm(top), norm(bottom)
+    OFF = 1.016                          # pin-name offset from the body edge
+
+    def longest(side, k=1):
+        return max([max(text_width(n) for n in p[0]) if k == 0 else text_width(p[1])
+                    for p in side if p] or [0])
+    wl, wr, ht, hb = longest(left), longest(right), longest(top), longest(bottom)
+    rows = max(len(left), len(right), 1)
+    cols = max(len(top), len(bottom))
+    # Pin names are drawn INSIDE the body: the flanks' names run inward from
+    # each side, the top and bottom names run vertically from their edges. The
+    # body is made wide enough that the vertical names have a corridor of
+    # their own between the two flanks, and tall enough that a top name and a
+    # bottom name in the same column do not meet -- otherwise GND, written
+    # upward from the bottom edge, lands across SDA.
+    corridor = ((cols - 1) * P + 1.8) if cols else 1.0
+    w = (wl + OFF + 0.8 if wl else 0.8) + corridor + (wr + OFF + 0.8 if wr else 0.8)
+    half_w = max(math.ceil(w / 2 / P - 1e-9) * P, P)
+    need_h = max((rows - 1) * P + 2 * P,
+                 (ht + OFF if top else 0) + (hb + OFF if bottom else 0) + (1.0 if top or bottom else 0))
+    half_h = math.ceil(need_h / 2 / 1.27 - 1e-9) * 1.27
+    # a pin long enough to carry its number ("A4B9" does not fit on 2.54 mm),
+    # in whole pitches so the pin ends stay on the grid the body is on
+    numw = max(longest(left, 0), longest(right, 0), longest(top, 0), longest(bottom, 0))
+    L = max(P, math.ceil((numw - 0.6) / P - 1e-9) * P)
+    # the columns sit in the middle of the body unless one flank's names are
+    # so much longer than the other's that the middle is not free
+    free_a = -half_w + (wl + OFF + 0.8 if wl else 0.8)
+    free_b = half_w - (wr + OFF + 0.8 if wr else 0.8)
+    span = (cols - 1) * P / 2.0 + 0.9 if cols else 0.0
+    cx = 0.0
+    if cols and (-span < free_a - 1e-6 or span > free_b + 1e-6):
+        cx = round((free_a + free_b) / 2.0 / 1.27) * 1.27
+
+    def col_x(side):
+        n = len(side)
+        return [cx + (i - (n - 1) / 2.0) * P for i, pin in enumerate(side) if pin is not None]
+
+    def pins_side(side, kind):
+        out = []
+        n = len(side)
+        for i, pin in enumerate(side):
+            if pin is None:
+                continue
+            if kind in ("left", "right"):
+                y = ((n - 1) / 2.0 - i) * P
+                x = -half_w - L if kind == "left" else half_w + L
+                ang = 0 if kind == "left" else 180
+            else:
+                x = cx + (i - (n - 1) / 2.0) * P
+                y = half_h + L if kind == "top" else -half_h - L
+                ang = 270 if kind == "top" else 90
+            for k, num in enumerate(pin[0]):
+                hide = " hide" if k else ""
+                ty = pin[2] if not k or pin[2] != "power_in" else "passive"
+                out.append('      (pin %s line (at %s %s %d) (length %s)%s\n'
+                           '        (name "%s" (effects (font (size 1.27 1.27))))\n'
+                           '        (number "%s" (effects (font (size 1.27 1.27)))))'
+                           % (ty, fmt(x), fmt(y), ang, fmt(L), hide, q(pin[1]), q(num)))
+        return out
+    pins = pins_side(left, "left") + pins_side(right, "right") + pins_side(top, "top") + pins_side(bottom, "bottom")
+
+    def text_x(width, xs):
+        """Where a field goes along an edge that may carry pins: at the body's
+        left corner when it ends short of the first pin (and of that pin's
+        number, which is written to the pin's left), else starting just right
+        of the last pin and running on past the body, as a drafter puts an
+        op-amp's value beside its supply pin. Never across a pin: a wire
+        leaves from there."""
+        if not xs or -half_w + width + 0.5 <= min(xs) - 1.8:
+            return -half_w
+        return max(xs) + 1.6
+    rx = text_x(text_width("U888"), col_x(top))
+    vx = text_x(text_width(name), col_x(bottom))
+    sym = ('  (symbol "%(n)s" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)\n'
+           '    (property "Reference" "%(ref)s" (at %(rx)s %(ry)s 0) (effects (font (size 1.27 1.27)) (justify left)))\n'
+           '    (property "Value" "%(n)s" (at %(vx)s %(vy)s 0) (effects (font (size 1.27 1.27)) (justify left)))\n'
+           '    (property "Footprint" "%(fp)s" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))\n'
+           '    (property "Datasheet" "%(ds)s" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))\n'
+           '    (property "Description" "%(de)s" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))\n'
+           '    (symbol "%(n)s_0_1"\n'
+           '      (rectangle (start %(x0)s %(y1)s) (end %(x1)s %(y0)s)\n'
+           '        (stroke (width 0.254) (type default)) (fill (type background))))\n'
+           '    (symbol "%(n)s_1_1"\n%(pins)s))\n') % {
+        "n": q(name), "ref": q(ref), "fp": q(footprint), "ds": q(datasheet), "de": q(description),
+        "rx": fmt(rx), "ry": fmt(half_h + 1.27), "vx": fmt(vx), "vy": fmt(-half_h - 1.27),
+        "x0": fmt(-half_w), "x1": fmt(half_w), "y0": fmt(-half_h), "y1": fmt(half_h), "pins": "\n".join(pins)}
+    text = ""
+    if os.path.exists(lib_path):
+        text = open(lib_path, encoding="utf-8").read()
+        m = re.search(r'\n\s*\(symbol "' + re.escape(name) + r'"[\s)]', text)
+        if m:                                       # replace the old definition
+            a = m.start() + 1
+            a = text.index("(symbol", a)
+            text = text[:a].rstrip() + "\n" + text[_balanced_end(text, a):].lstrip("\n")
+    if not text.strip():
+        text = '(kicad_symbol_lib (version 20211014) (generator "schlib")\n)\n'
+    k = text.rstrip().rfind(")")
+    text = text[:k].rstrip() + "\n" + sym + ")\n"
+    os.makedirs(os.path.dirname(os.path.abspath(lib_path)), exist_ok=True)
+    with open(lib_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+    r = subprocess.run([cli or find_kicad_cli(), "sym", "upgrade", "--force", lib_path],
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("kicad-cli sym upgrade failed for %s:\n%s%s" % (lib_path, r.stdout, r.stderr))
+    return name
+
+
+# ===========================================================================
 # Placement transforms
 # ===========================================================================
 
@@ -776,6 +932,7 @@ class Sheet:
         self._fields = None           # cached reference/value spots
         self._pin_pts = None          # cached pin positions
         self._relieved = False
+        self._staged = False          # blocks stood clear of each other for measuring
         self._paras = None            # cached note paragraphs
         self._items = None            # cached item_boxes()
         self._grid = None             # its spatial index
@@ -1125,6 +1282,33 @@ class Sheet:
         finally:
             self.block_end()
 
+    def label_joins(self):
+        """Connections made by LABEL inside one block: [(block title, net, labels)].
+
+        A label is for joining things a wire cannot sensibly reach -- another
+        block, another sheet, the far side of a net that would have to be
+        crossed. Inside a block the reader expects to follow a line. Two
+        labels with the same name in one block mean two parts of one small
+        circuit are joined only by name, and the circuit's shape -- which is
+        what a schematic is for -- is gone: a two-transistor current limiter
+        drawn as five labelled stubs is a netlist with pictures.
+
+        One label on a wire is a net NAME and is not counted. The count is by
+        top-level block, so a join between two nested groups of one circuit
+        counts too. Not an error: rule 3 still allows a label where the wire
+        would cross another net; this makes each such choice visible."""
+        out = []
+        for b in self.blocks:
+            a, z = self._slices(b)["labels"]
+            seen = {}
+            for kind, name, *_rest in self.labels[a:z]:
+                if kind == "label":
+                    seen[name] = seen.get(name, 0) + 1
+            for name, c in sorted(seen.items()):
+                if c >= 2:
+                    out.append((b["title"] or "(untitled)", name, c))
+        return out
+
     def all_blocks(self, blocks=None):
         """Every block, parents before children, in declaration order."""
         out = []
@@ -1307,6 +1491,41 @@ class Sheet:
         a, z = sl["bus_entries"]
         self.bus_entries[a:z] = [(*mv(x, y), sx, sy) for x, y, sx, sy in self.bus_entries[a:z]]
 
+    def _stage(self, blocks, depth=0):
+        """Stand blocks clear of one another before any of them is measured.
+
+        Blocks are drawn in overlapping local coordinates, and where a part's
+        reference and value go depends on what is around it. A block measured
+        while three others lie on top of it can come out 18 mm wider than the
+        same block standing clear -- and it keeps that phantom width as its
+        place on the page, so its row starts 18 mm in from the others. Moving
+        each block far from its siblings first makes every measurement the
+        block's own."""
+        step = 2540.0 / (10 ** (depth // 2))
+        for i, b in enumerate(blocks):
+            if i and self.block_extent(b) is not None:
+                self.translate_block(b, *((i * step, 0.0) if depth % 2 == 0 else (0.0, i * step)))
+        for b in blocks:
+            if b["children"]:
+                self._stage(b["children"], depth + 1)
+
+    def _land(self, b, x, y):
+        """Move a block so its extent's top-left corner is at (x, y); returns
+        the extent it ends up with. Measured again after the move: snapping to
+        the grid, and text that re-places itself against new neighbours, can
+        shift an edge, so the difference is taken up until it is where it
+        should be."""
+        e = self.block_extent(b)
+        for _ in range(4):
+            if e is None:
+                return None
+            dx, dy = snap(x - e[0]), snap(y - e[1])
+            if not dx and not dy:
+                break
+            self.translate_block(b, dx, dy)
+            e = self.block_extent(b)
+        return e
+
     def _target_width(self, blocks, gutter, maxw):
         """Wrap width giving a group a readable aspect: never wider than the
         page, never narrower than its widest member."""
@@ -1338,12 +1557,11 @@ class Sheet:
             w, h = e[2] - e[0], e[3] - e[1]
             if cx > x0 + 1e-9 and (cx - x0) + w > width:
                 cx, cy, row_h = x0, cy + row_h + gutter, 0.0
-            self.translate_block(b, snap(cx - e[0]), snap(cy - e[1]))
             # measure where it actually landed rather than trusting the
             # pre-move extent: snapping to the grid, and anything that shifts
             # an item's ownership, can move the edge by a fraction of a
             # millimetre -- which is exactly enough for two outlines to touch
-            after = self.block_extent(b) or e
+            after = self._land(b, cx, cy) or e
             cx = after[2] + gutter
             row_h = max(row_h, after[3] - cy)
 
@@ -1357,13 +1575,58 @@ class Sheet:
                       max(bb[2], e[2]), max(bb[3], e[3]))
         return bb
 
-    def arrange(self, gutter=BLOCK_GUTTER, width=None, grow=True, relieve=True):
+    def _compose(self, node, x, y, gutter, vertical, used):
+        """Place a layout node with its top-left corner at (x, y); returns (w, h)."""
+        if isinstance(node, str):
+            hits = [b for b in self.blocks if (b["title"] or "").startswith(node)]
+            if len(hits) != 1:
+                raise ValueError("%s: layout names %r, which matches %d block(s): %s" % (
+                    self.filename, node, len(hits),
+                    ", ".join(repr(b["title"]) for b in (hits or self.blocks))))
+            b = hits[0]
+            if id(b) in used:
+                raise ValueError(f"{self.filename}: layout places {b['title']!r} twice")
+            used.add(id(b))
+            e = self._land(b, x, y)              # where it landed, after the grid snap
+            if e is None:
+                return 0.0, 0.0
+            return e[2] - x, e[3] - y
+        w = h = 0.0
+        cx, cy = x, y
+        for child in node:
+            cw, ch = self._compose(child, cx, cy, gutter, not vertical, used)
+            if cw <= 0 and ch <= 0:
+                continue
+            if vertical:
+                w, h, cy = max(w, cw), cy + ch - y, cy + ch + gutter
+            else:
+                w, h, cx = cx + cw - x, max(h, ch), cx + cw + gutter
+        return w, h
+
+    def arrange(self, gutter=BLOCK_GUTTER, width=None, grow=True, relieve=True, layout=None):
         """Lay the blocks out in reading order and size the paper to fit.
 
         Blocks are placed in the order they were declared -- so declare them in
         signal order, input first -- flowing left to right and wrapping to a new
         row when the width runs out. `grow` steps the paper up (A4 -> A3 -> A2
-        -> A1) until the drawing fits."""
+        -> A1) until the drawing fits.
+
+        `layout` composes the page by hand instead, as a drafter does once the
+        blocks exist: the flow fills rows to the height of their tallest block
+        and leaves the space under every shorter one empty, which is often the
+        difference between A3 and A2. It is a list of rows, top to bottom; a
+        row is a list of columns, left to right; a column is a block or a list
+        of things stacked top to bottom -- and so on, rows and columns
+        alternating as deep as needed. A block is named by its title, or any
+        leading part of it that is unique:
+
+            s.arrange(layout=[
+                ["USB-C", ["3.3 V", "NOTES"], "MCU"],            # three columns
+                [["BOOST", ["LIMITER", "TEST POINTS"]], "LOOP"], # boost over a row of two
+            ])
+
+        Every top-level block must be named exactly once. Print the sizes
+        first (block_extent) and do the sums against usable_area(paper)."""
         if self._block_stack:
             raise ValueError(f"{self.filename}: {len(self._block_stack)} block(s) never closed")
         if relieve and not self._relieved:
@@ -1371,6 +1634,32 @@ class Sheet:
             # outline is derived from what is inside it
             self.relieve()
         if not self.blocks:
+            return
+        if not self._staged:
+            self._stage(self.blocks)
+            self._staged = True
+        if layout is not None:
+            for b in self.blocks:
+                if b["children"]:
+                    self._flow(b["children"], self._target_width(
+                        b["children"], gutter, 1e9) if b["width"] is None else b["width"], gutter)
+            ext = [e for e in (self.block_extent(b) for b in self.blocks) if e]
+            x0, y0 = min(e[0] for e in ext), min(e[1] for e in ext)
+            used = set()
+            self._compose(layout, x0, y0, gutter, True, used)
+            left = [b["title"] or "(untitled)" for b in self.blocks
+                    if id(b) not in used and self.block_extent(b)]
+            if left:
+                raise ValueError("%s: layout leaves out block(s): %s" % (self.filename, ", ".join(map(repr, left))))
+            x0, y0, x1, y1 = self.drawing_bbox()
+            if self.paper == "auto" or (grow and self.paper in GROW_PAPER_ORDER):
+                order = GROW_PAPER_ORDER if self.paper == "auto" else \
+                    GROW_PAPER_ORDER[GROW_PAPER_ORDER.index(self.paper):]
+                for p in order:
+                    uw, uh = self.usable_area(p)
+                    if (x1 - x0) <= uw and (y1 - y0) <= uh:
+                        break
+                self.paper = p
             return
         if self.paper == "auto" and width is None and grow:
             # Flow at each page width in turn and keep the first page the result
@@ -3264,6 +3553,13 @@ class Sheet:
                    min(v[1], v[3]) + 1e-6 < h[1] < max(v[1], v[3]) - 1e-6:
                     crossings += 1
         info.append(f"{crossings} wire crossing(s)")
+        joins = self.label_joins()
+        if joins:
+            info.append("%d connection(s) made by label inside a block (%s) -- wire them unless a wire "
+                        "would cross" % (sum(c - 1 for _b, _n, c in joins),
+                                         ", ".join("%s x%d" % (n, c) for _b, n, c in joins[:8])))
+        else:
+            info.append("0 label joins inside a block")
 
         # Drafting faults: blocks that run into each other, parts drawn on top
         # of each other, text crowded against its neighbours. ERC sees none of
@@ -3662,14 +3958,38 @@ class Design:
         self.root = None
 
     # ---- construction ------------------------------------------------------
+    def functional_symbol(self, name, nick=None, **sides):
+        """A redrawn, functional symbol for one part; returns its lib_id.
+
+        Writes it into <project>/libraries/<nick>.kicad_sym (default nick:
+        "<project>_func"), adds that library to the project's sym-lib-table
+        if it is not there, and makes it loadable at once. See
+        functional_symbol() for the pin lists."""
+        nick = nick or re.sub(r"[^A-Za-z0-9_]", "_", self.name) + "_func"
+        path = os.path.join(self.project_dir, "libraries", nick + ".kicad_sym")
+        functional_symbol(path, name, cli=self.cli, **sides)
+        table = os.path.join(self.project_dir, "sym-lib-table")
+        entry = '  (lib (name "%s")(type "KiCad")(uri "${KIPRJMOD}/libraries/%s.kicad_sym")(options "")(descr "Functional symbols written by schlib"))\n' % (nick, nick)
+        text = open(table, encoding="utf-8").read() if os.path.exists(table) else "(sym_lib_table\n  (version 7)\n)\n"
+        if '(name "%s")' % nick not in text:
+            k = text.rstrip().rfind(")")
+            with open(table, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text[:k].rstrip() + "\n" + entry + ")\n")
+        self.lib.add(nick, path)
+        self.lib._text.pop(nick, None)
+        self.lib._cache.pop("%s:%s" % (nick, name), None)
+        return "%s:%s" % (nick, name)
+
     def sheet(self, filename, title, paper="A4", comment=""):
         s = Sheet(self.lib, filename, title, paper, comment)
+        s.design = self               # so a block drawn on it can write a functional symbol
         self.children.append(s)
         return s
 
     def root_sheet(self, filename=None, title=None, paper="A4", comment=""):
         filename = filename or f"{self.name}.kicad_sch"
         self.root = Sheet(self.lib, filename, title or self.title, paper, comment)
+        self.root.design = self
         return self.root
 
     def link(self, child, x, y, w, h, pins=()):
@@ -3807,6 +4127,13 @@ class Design:
             ux, uy = s.utilization()
             written.append(path)
             print(f"  wrote {s.filename:32s} {s.paper:8s} fill {ux:4.0%} x {uy:4.0%}")
+            pw = PAPER_SIZES.get(s.paper, (297.0, 210.0))[0]
+            if pw > 420.5:
+                # what a reader with an office printer gets: the sheet shrunk to A4 / Letter
+                k = 297.0 / pw
+                print(f"  note {s.filename}: {s.paper} prints at {k:.0%} on A4 -- 1.27 mm text comes out "
+                      f"{1.27 * k:.2f} mm, 1.0 mm notes {1.0 * k:.2f} mm. A3 is the largest sheet that stays "
+                      f"readable; tighten the blocks or split the sheet")
             if s.title_block_overlap():
                 print(f"  warning {s.filename}: drawing reaches into the title-block "
                       f"corner -- check the render, or use a larger paper")

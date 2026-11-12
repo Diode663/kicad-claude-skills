@@ -137,3 +137,24 @@ strings and gives the gap. Everything below assumes you have that list.
 | `paper="auto"` put every block in one row and ran off the page (121 % wide) | the blocks were flowed once at the widest page, and the page chosen afterwards | fixed: `arrange()` now flows at each page width in turn and keeps the first page that fits |
 | a stock symbol stacks many hidden pins on one point (`Bus_M.2_Socket_E`: 11 GND, 4 × 3.3 V) | intended | one `stub()` on the visible pin connects them all; list every stacked pin in `NETS` and `verify()` confirms it |
 | connector hold-down tabs float | the stock symbol has no pins for them | copy the symbol into the project library and add passive pins (one visible, the rest hidden at the same point) numbered like the footprint's tab pads |
+
+## Learned on a USB-C PD battery charger (2026-10-22)
+| Symptom | Cause | Fix |
+|---|---|---|
+| ERC `multiple_net_names`: "Both GND and PGND" (or "GND and EP") on one item | a hidden pin typed **power input** is an implicit global net named after the pin, so a stacked hidden `PGND`/`EP` power-in pin creates its own net | type stacked hidden pins `passive`; keep power input on the one visible pin |
+| an EasyEDA IC symbol lacks pin numbers the datasheet lists (TPS25751D: 20, 22, 23, 25, 33, 35) | the footprint fuses those leads into one custom pad (21, 24, 32, 34) | match the symbol to the footprint's pads, not the datasheet's pin count, and check the land pattern before layout |
+| `check_text()` reports a value overlapping the *next* capacitor at 15.24 mm pitch | values like `10uF/50V` plus the reference need about 17.8 mm | space hanging parts by their text (`part_pitch()`), or stagger rows |
+| ERC `pin_to_pin` "Bidirectional and Power output" on GPIOs tied to GND | unused GPIOs tied low as the datasheet asks; GND is driven by a PWR_FLAG | intentional; note it on the sheet |
+| a power port at the end of a horizontal stub stays rotated on a dense IC flank | standing it up would collide | run each supply pin out and up to an upright port in its own column (2.54, 10.16, 17.78 mm out) |
+
+## Learned redrawing a 52-part sensor board (2026-11-11)
+| Symptom | Cause | Fix |
+|---|---|---|
+| a block reads as scattered parts joined by names | connections inside the block were made by label | wire them; `label_joins()` counts them. If a wire cannot be drawn, the symbol is usually at fault: `Design.functional_symbol` |
+| a functional symbol's top or bottom pin names print across the side names | the body was sized for the flanks only | fixed in `functional_symbol`: the vertical names get a corridor between the flanks and the body grows until a top and a bottom name cannot meet. If it happens with a hand-made symbol, widen the body |
+| wires stranded after a symbol was resized | the block was written against typed coordinates | anchor on `s.pin(ref, n)` and offsets from it |
+| one row of blocks starts 18 mm further in than the next | a block was measured while others lay on top of it in local coordinates; reference and value text had moved out of their way, widening it | fixed: `arrange()` stands the blocks clear of each other before measuring (`_stage`) and re-measures after each move (`_land`) |
+| a part's value lands on a wire that the block drew past the part | `place()` puts fields on the side of the part with no pins, which for a four-sided part is beside a pin | route that wire one text-width further out (`text_width(value)`), or the checks will report it |
+| a legend written as one multi-line `note()` looks cramped | KiCad's line pitch for multi-line text is tighter than the 2.54 mm used everywhere else | one `note()` per line |
+| the sheet needs A2 though the blocks' area fits A3 | row flow leaves the space under every short block empty | `arrange(layout=[...])`, `pad=3.81`, `gutter=10.16`, shorter block titles |
+| `SPICE` reports a source where a fuse was meant | an element whose name starts with F is a current-controlled source | call it `Rptc` |

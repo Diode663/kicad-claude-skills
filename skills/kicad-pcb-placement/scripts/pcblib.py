@@ -225,6 +225,72 @@ JLC_STACKUPS = {
     },
 }
 
+# Controlled-impedance geometry, read from JLCPCB's own impedance calculator
+# (jlcpcb.com/pcb-impedance-calculator) -- not estimated. A stackup with no entry
+# here has no confirmed widths: go and read them, then add them.
+#
+#   key   (kind, ohms, gap_mil)   kind: "diff"  edge-coupled microstrip pair, gap = pair spacing
+#                                       "se"    single-ended microstrip, gap = None
+#                                       "cpw"   coplanar single-ended, gap = trace to ground pour
+#   value  trace width W1 in mm (the width at the FOOT of the trace: the number to draw)
+#
+# JLC04161H-7628, read 2026-09-20: rigid, 4 layers, 1.6 mm, 1 oz outer / 0.5 oz
+# inner, L1 over L2 (L4 over L3 is the same construction). Their model inputs:
+# H1 8.2835 mil at Er 4.3 -- NOT the 4.4 of the material sheet above -- finished
+# copper 1.6 mil, etch taper W2 = W1 - 0.5 mil, mask 1.0/0.6/1.0 mil at Er 3.8.
+JLC_IMPEDANCE = {
+    "JLC04161H-7628": {
+        ("diff", 90, 5): 0.2187, ("diff", 90, 6): 0.2474, ("diff", 90, 7): 0.2764, ("diff", 90, 8): 0.2906,
+        ("diff", 100, 5): 0.1537, ("diff", 100, 6): 0.1826, ("diff", 100, 8): 0.2258, ("diff", 100, 10): 0.2545,
+        ("se", 50, None): 0.3586,
+        ("cpw", 50, 6): 0.2631, ("cpw", 50, 8): 0.3058, ("cpw", 50, 10): 0.3203, ("cpw", 50, 20): 0.3487,
+    },
+}
+# A microstrip figure assumes no copper beside the trace. JLCPCB's coplanar
+# differential model on the stackup above: a pour 20 mil away moves a 90 ohm pair
+# +0.6 %, a pour 8 mil away moves it -5 % (100 ohm: +1.3 % and -7 %). Keep zones
+# this far from microstrip pair classes and the microstrip figure holds.
+JLC_POUR_KEEPAWAY_MM = 0.5
+MIL = 0.0254
+
+
+def jlc_width(stackup, kind, ohms, gap_mil=None):
+    """(width_mm, gap_mm) from JLCPCB's calculator, or a KeyError that says what is on file.
+
+    gap_mm is the pair spacing for "diff", the ground-pour gap for "cpw", None for "se"."""
+    table = JLC_IMPEDANCE.get(stackup)
+    if table is None:
+        raise KeyError("no calculator figures on file for %s -- read them from "
+                       "jlcpcb.com/pcb-impedance-calculator and add them to JLC_IMPEDANCE" % stackup)
+    try:
+        w = table[(kind, ohms, gap_mil)]
+    except KeyError:
+        have = sorted("%s %s ohm gap %s mil" % k for k in table if k[0] == kind and k[1] == ohms)
+        raise KeyError("%s: no %s %s ohm at gap %s mil; on file: %s"
+                       % (stackup, kind, ohms, gap_mil, "; ".join(have) or "nothing for that target"))
+    return w, (None if gap_mil is None else round(gap_mil * MIL, 4))
+
+
+def jlc_pour_rules(microstrip_classes=(), coplanar=None):
+    """Text for a <project>.kicad_dru: how close a ground pour may come to each class.
+
+    microstrip_classes: netclasses routed as plain microstrip -- zones keep
+        JLC_POUR_KEEPAWAY_MM away, so the microstrip width stays true.
+    coplanar: {netclass: gap_mm} for classes routed coplanar on purpose -- the
+        gap is part of the impedance, so zones are held at exactly that."""
+    out = ["(version 1)", "# Written by the fab setup script -- edit there, not here.", ""]
+    if microstrip_classes:
+        cond = " || ".join("B.NetClass == '%s'" % c for c in microstrip_classes)
+        out += ['(rule "microstrip pairs: keep pours %.2f mm away"' % JLC_POUR_KEEPAWAY_MM,
+                "\t(condition \"A.Type == 'Zone' && (%s)\")" % cond,
+                "\t(constraint clearance (min %smm)))" % JLC_POUR_KEEPAWAY_MM, ""]
+    for cls, gap in (coplanar or {}).items():
+        out += ['(rule "%s is coplanar: ground pour at the calculated gap"' % cls,
+                "\t(condition \"A.Type == 'Zone' && B.NetClass == '%s'\")" % cls,
+                "\t(constraint clearance (min %smm)))" % gap, ""]
+    return "\n".join(out)
+
+
 # JLCPCB's standard 2-layer 1.6 mm, as their impedance calculator reports it
 # (Layers 2, 1.6 mm, 1 oz, read 2026-09-20): 0.030 copper / 1.43 core / 0.030.
 # Dk 4.5 for 2-layer boards is from their capabilities page. JLCPCB does not
@@ -399,7 +465,17 @@ class Board:
 
         Verified on pcbnew 10.0.6: dropping the proxy crashes, disowning it
         and keeping a reference does not.
+
+        An item that belongs to a PCB_GROUP is taken out of the group first:
+        the group keeps a raw pointer to it, and removing a grouped footprint
+        (to swap it for another) segfaulted a later step on 10.0.6.
         """
+        try:
+            grp = item.GetParentGroup()
+            if grp is not None:
+                grp.RemoveItem(item)
+        except Exception:
+            pass
         self.board.Remove(item)
         try:
             item.thisown = False
@@ -713,13 +789,16 @@ class Board:
             new.SetFPID(lid)
             new.SetReference(ref)
             new.SetValue(fp.GetValue())
-            new.SetPosition(fp.GetPosition())
-            new.SetOrientation(fp.GetOrientation())
+            pos, rot, flipped = fp.GetPosition(), fp.GetOrientation(), fp.IsFlipped()
             new.SetPath(fp.GetPath())
-            if fp.IsFlipped() != new.IsFlipped():
-                new.Flip(new.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
             self._remove(fp)
             self.board.Add(new)
+            # Flip only once the footprint is on a board: Flip() on a free-standing
+            # footprint can segfault pcbnew 10.0.6 (seen with a stock library part).
+            new.SetPosition(pos)
+            if flipped != new.IsFlipped():
+                new.Flip(new.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+            new.SetOrientation(rot)
             self.fps[ref] = new
             after = len(list(new.Pads()))
             done.append("%s%s" % (ref, "" if before == after
@@ -846,6 +925,44 @@ class Board:
         self._stale_holes.pop(ref, None)
         return fp
 
+    def text(self, s, x, y, size=1.0, thickness=None, angle=0, layer="F.SilkS", justify="center"):
+        """Legend text on the silkscreen: what a connector's pins are, which
+        button is which, the board's name and revision.
+
+        A board whose silkscreen carries designators only tells the person
+        holding it nothing they need: designators are for assembly, the legend
+        is for use. Label every field connector's pins, every button and
+        indicator, and put the name and revision somewhere visible.
+
+        Board-level silk text belongs to the script: the first call of a run
+        removes whatever text is already on either silk layer, so the legend
+        can be edited and re-run like everything else here (text typed in the
+        board editor is lost -- put it in the script). Text on the bottom
+        layer is mirrored so it reads from that side.
+
+        1.0 mm high with 0.15 mm strokes is the smallest that prints reliably
+        at the budget fabs (JLCPCB asks for 0.8 mm / 0.15 mm at least). DRC
+        reports text that lands on exposed copper as silk_over_copper."""
+        if not getattr(self, "_text_cleared", False):
+            for d in list(self.board.GetDrawings()):
+                if d.GetClass() == "PCB_TEXT" and d.GetLayer() in (pcbnew.F_SilkS, pcbnew.B_SilkS):
+                    self._remove(d)
+            self._text_cleared = True
+        t = pcbnew.PCB_TEXT(self.board)
+        t.SetText(s)
+        lay = self.board.GetLayerID(layer)
+        t.SetLayer(lay)
+        t.SetPosition(self.pt(x, y))
+        t.SetTextSize(pcbnew.VECTOR2I(mm(size), mm(size)))
+        t.SetTextThickness(mm(thickness if thickness else max(0.15, round(size * 0.15, 2))))
+        t.SetTextAngleDegrees(angle)
+        t.SetHorizJustify({"left": pcbnew.GR_TEXT_H_ALIGN_LEFT, "center": pcbnew.GR_TEXT_H_ALIGN_CENTER,
+                           "right": pcbnew.GR_TEXT_H_ALIGN_RIGHT}[justify])
+        if lay == pcbnew.B_SilkS:
+            t.SetMirrored(True)
+        self.board.Add(t)
+        return t
+
     # -- schematic linkage ------------------------------------------------
 
     def _netlist_root(self):
@@ -886,6 +1003,26 @@ class Board:
             if f.GetName() == name:
                 return f
         return None
+
+    def dnp_refs(self):
+        """References of symbols marked Do Not Populate, read from the sheet files.
+
+        The netlist export does not carry the flag, and DRC's schematic-parity check
+        reports every DNP symbol whose footprint lacks it."""
+        import glob
+        import re
+        out = set()
+        for f in glob.glob(os.path.join(self.dir, "*.kicad_sch")):
+            t = open(f, encoding="utf-8", errors="replace").read()
+            # placed symbols start with "(symbol (lib_id"; each block runs to the next one
+            starts = [m.start() for m in re.finditer(r"\(symbol\s*\(lib_id", t)]
+            for k, a in enumerate(starts):
+                blk = t[a: starts[k + 1] if k + 1 < len(starts) else len(t)]
+                if "(dnp yes)" in blk:
+                    m = re.search(r'\(property "Reference" "([^"]+)"', blk)
+                    if m:
+                        out.add(m.group(1))
+        return out
 
     def schematic_fields(self):
         """{ref: {"value": str, "fields": {name: text}}} from the netlist export."""
@@ -945,10 +1082,13 @@ class Board:
         uuids, nets = self.netlist()
         sheet = os.path.basename(self.sch)
         fields = self.schematic_fields()
+        dnp = self.dnp_refs()
         for ref, fp in self.fps.items():
             if ref not in uuids:
                 continue                       # mounting holes and the like
             fp.SetPath(pcbnew.KIID_PATH("/" + uuids[ref]))
+            if hasattr(fp, "SetDNP"):
+                fp.SetDNP(ref in dnp)
             if hasattr(fp, "SetSheetfile"):
                 fp.SetSheetfile(sheet)
                 fp.SetSheetname("/")

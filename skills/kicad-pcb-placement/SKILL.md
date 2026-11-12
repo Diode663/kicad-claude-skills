@@ -115,6 +115,55 @@ Convert the SVG to PNG and **look at it**, then send it to the user with:
 
 Adjust the config or lock parts in KiCad, re-run, until the user approves.
 
+### 5b. The other way round: groups off the board, the user places them
+Some owners want to do the floor plan themselves. Then the job is not where
+each circuit goes but what each circuit LOOKS like: every main part with its
+support parts, arranged the way its datasheet draws it, bound into a KiCad
+group and parked beside the empty outline. `scripts/grouplib.py` does this;
+its docstring shows the calls. It was written for a 196-part board laid out
+as 20 groups.
+
+- **One group per main part and the parts that must sit with it.** Where
+  closeness is not required, make a separate group: small groups fit a tight
+  board, one big one does not. Test points and fiducials stay ungrouped --
+  probe access and board corners decide where they go, not a circuit.
+- **Read the layout figure, not only the layout text.** Have the PDF pages
+  rendered and looked at (the Read tool needs pdftoppm; PyMuPDF works when
+  it is missing). Figures carry what the prose leaves out: which side of
+  the package each cap sits, which pad faces the IC, parts on the far side
+  of the board, a ground strip under the body. No figure? Use the
+  manufacturer's EVB, then a public board built on the same part, and say
+  which it was in the group's `source`.
+- **`snap()` order is the datasheet's priority order.** Each call finds the
+  nearest free pose for one pad against a target pad, so whatever is placed
+  first gets the best spot. Use `put()` / `pin()` when the figure fixes a
+  position outright.
+- **Design every group from the top.** A bottom-side group is mirrored on
+  commit -- (x, y, rot) becomes (-x, y, 180 - rot) -- which is exactly what
+  KiCad does when the user flips a group, so either side keeps the layout.
+  `put(..., back=True)` puts one part on the far side of its own group
+  (bootstrap caps under a charger, as TI draws them); a KiCad group may
+  span both sides.
+- **Courtyard sizes differ between 0402 resistors and 0402 capacitors**
+  (0.97 x 0.52 against 0.95 x 0.51 half-extents in KiCad 10). Compute
+  offsets from `Group.rect()`, never from a remembered number.
+- **Only footprints move.** Clear `b._stale_holes` and `b._stale_zones`
+  before `save()`, or a script that calls neither `hole()` nor `keepout()`
+  deletes every mounting hole and rule area on the board.
+- **Courtyards first.** Converted footprints usually have body-only courtyards; fix them
+  (`references/troubleshooting.md` says how) before laying groups out, use `GAP = 0`
+  (courtyards may touch) and call `Group.settle()`, which re-opens any gap that a
+  footprint change closes without disturbing the arrangement.
+- **Check pad NUMBERING of every module socket against the module's own datasheet**
+  before anything else (`references/troubleshooting.md`): it is invisible to ERC,
+  parity and DRC, and it was the one fatal error on the board this was written for.
+- **Verify the saved file**: every recorded distance re-measured on the real
+  pads (this is what proves the mirror and the far-side parts), nothing over
+  the outline, group membership, no courtyard overlaps, DRC, parity 0.
+- Drawing each group as a PNG with pads coloured by net (`Group.draw()`)
+  and looking at it catches what distances do not: a resistor with the
+  wrong end towards the pin, a cap across a connector's fan-out.
+
 ### 6. Place — the second review stop
 ```bash
 ... autoplace.py PROJECT --place
@@ -144,8 +193,19 @@ Call it after `place_all()` (it overrides the caps' table entries), pass
 ### 7. Critical routing (only when asked)
 Placement and critical routing overlap: a regulator loop is placement *and*
 copper. When the user asks for it:
-- confirm impedance widths with the fab's calculator first
-  (`references/stackup-impedance.md` — the listed widths are unconfirmed);
+- take impedance widths from the fab's own calculator, never from a formula.
+  For JLCPCB's standard 4-layer (JLC04161H-7628) they are on file, read from
+  that calculator: `pcblib.jlc_width(stackup, "diff", 90, 6)` returns
+  (0.2474, 0.1524). A formula-based estimate on the same stackup was 5 % narrow
+  at 90 Ω and 10 % narrow at 50 Ω, because it models neither the solder mask nor
+  the etch taper. For any other stackup, read the calculator and add the
+  figures to `JLC_IMPEDANCE` (`references/stackup-impedance.md` says how);
+- **decide what the pour does beside each controlled net, and write it as a
+  rule.** A microstrip width assumes no copper alongside: a ground pour 8 mil
+  from a 90 Ω pair pulls it down 5 %, one 20 mil away does nothing. So either
+  keep zones 0.5 mm from the pair classes, or route coplanar on purpose (RF
+  feeds usually are) with the gap held exactly. `pcblib.jlc_pour_rules()`
+  writes both kinds into `<project>.kicad_dru`;
 - set net classes: 90 Ω USB/PCIe, 100 Ω Ethernet, power widths by current;
 - **check that KiCad can see the pairs**: `b.check_diff_pairs()` asks
   pcbnew's own `DpCoupledNet()` which nets it has coupled. KiCad infers pairs
@@ -277,6 +337,15 @@ Details, reasons and sources: `references/placement-conventions.md` and
 8. Through-hole pads occupy both sides — never put a bottom part under one.
 9. Leave routing channels. Capacity above ~50% is a board-size problem.
 10. Like parts aligned, references readable, polarity marks visible.
+11. A legend, not only designators: every field connector's pinout, every
+    button and indicator, the board's name and revision. `Board.text()` puts
+    it on either silk layer (bottom text is mirrored for you); a connector
+    whose body hides the board gets its pinout on the bottom under its pins
+    as well. Designators serve assembly; the legend serves whoever wires it.
+12. Nothing live under a mounting screw. Keep every pad and via of a
+    non-ground net at least the standoff's corner radius plus 0.3 mm from the
+    hole's centre (an M2 hex standoff is 4.5 mm across flats, about 2.6 mm
+    to a corner). Courtyards do not show this: a hole's courtyard is the hole.
 
 ## pcbnew facts you will need
 Full notes in `references/pcbnew-api.md`.
@@ -311,6 +380,12 @@ Each is explained in `references/troubleshooting.md`.
   (a router, a clearance check) belongs in `FIXED`, with its pad positions asserted.
 - Designators the user moves in KiCad are kept by `tidy_references()` (ledger
   `.pcbgen-refs.json`); never edit a board file while KiCad has it open (`~*.lck`).
+- Adding two parts to a full corner: measure the real footprints (pads and
+  courtyard from the library) before choosing spots, and count the row's
+  length in courtyards. Three arrangements were tried on one board before
+  the sums were done; the sums took a minute.
+- The ray-traced `render()` takes minutes once the board has copper and
+  pours. Skip it while iterating; render once at the end.
 - Measure, don't reason: when pcbnew behaves oddly, isolate one call.
 
 ## Worked examples
